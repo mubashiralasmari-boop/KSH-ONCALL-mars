@@ -1187,6 +1187,92 @@ function renderDeptTab(tab) {
     }
 
     // ── General Surgery (consultant + specialist + 2 residents + plastic) ──
+    // ── Orthopedic (3 ER shifts + specialist 24hr) ──
+    if (state.currentDept === 'dept_ortho') {
+      const e = ORTHO_SCHED[key];
+      if (!e) {
+        container.innerHTML = `<div class="empty-state"><div class="empty-icon">📅</div><h3>لا توجد بيانات اليوم (${key})</h3></div>`;
+        return;
+      }
+      function getOrthoPhone(name) {
+        const dept = state.departments['dept_ortho'];
+        if (!dept) return '';
+        const all = [...(dept.consultants||[]),...(dept.specialists||[]),...(dept.residents||[])];
+        const up = name.toUpperCase().trim();
+        for (const p of all) {
+          if (p.name.toUpperCase().trim() === up) return p.phone || '';
+        }
+        return '';
+      }
+      function orthoNames(str) {
+        return (str||'').split('/').map(n=>n.trim()).filter(Boolean);
+      }
+      function orthoRow(name, role, cfg) {
+        const ph = getOrthoPhone(name);
+        return `<div class="shift-person-row">
+          <div class="shift-pa" style="background:${cfg.bg};">${cfg.icon||'👨‍⚕️'}</div>
+          <div class="shift-pi"><div class="shift-pn">${name}</div><div class="shift-pr">${role}</div></div>
+          ${ph?`<a href="tel:${ph}" class="shift-phone">📞 ${ph}</a>`:''}
+        </div>`;
+      }
+
+      const activeShift = getCurrentShift();
+      const now = new Date();
+      const h = now.getHours();
+      const orthoActive = h >= 10 && h < 18 ? 'er1' : h >= 18 || h < 2 ? 'er2' : 'er3';
+
+      const shifts = [
+        {key:'er1', label:'الشفت الأول', time:'10AM - 6PM',  icon:'☀️', bg:'rgba(245,158,11,.1)',  border:'rgba(245,158,11,.3)',  color:'#f59e0b'},
+        {key:'er2', label:'الشفت الثاني',time:'6PM - 2AM',   icon:'🌆', bg:'rgba(99,102,241,.1)',  border:'rgba(99,102,241,.3)',  color:'#6366f1'},
+        {key:'er3', label:'الشفت الثالث',time:'2AM - 10AM',  icon:'🌙', bg:'rgba(15,23,42,.4)',    border:'rgba(148,163,184,.2)', color:'#94a3b8'},
+      ];
+
+      let html = `<div style="margin-bottom:12px;">
+        <span class="badge badge-blue">📅 ${key}</span>
+        <span class="badge" style="background:rgba(16,185,129,.1);color:#10b981;margin-right:6px;">🦴 عظام · 3 شفتات</span>
+      </div>`;
+
+      // Specialist 24hr
+      const spName = e.specialist;
+      const spPhone = getOrthoPhone(spName);
+      html += `<div style="margin-bottom:8px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:1px;">⭐ أخصائي مناوب 24 ساعة</div>
+        <div class="ct-row" style="border-color:rgba(6,182,212,.3);background:rgba(6,182,212,.07);margin-bottom:14px;">
+          <div class="ct-avatar" style="background:rgba(6,182,212,.15);">⭐</div>
+          <div class="ct-info"><div class="ct-name">${spName}</div><div class="ct-role">2nd On Call - أخصائي 24 ساعة</div></div>
+          ${spPhone?`<a href="tel:${spPhone}" class="ct-phone">📞 ${spPhone}</a>`:''}
+        </div>`;
+
+      // Consultant
+      const conName = e.consultant;
+      const conPhone = getOrthoPhone(conName);
+      html += `<div style="margin-bottom:8px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:1px;">👨‍⚕️ الاستشاري المناوب</div>
+        <div class="ct-row" style="border-color:rgba(245,158,11,.3);background:rgba(245,158,11,.07);margin-bottom:14px;">
+          <div class="ct-avatar" style="background:rgba(245,158,11,.15);">👨‍⚕️</div>
+          <div class="ct-info"><div class="ct-name">${conName}</div><div class="ct-role">Consultant On Call</div></div>
+          ${conPhone?`<a href="tel:${conPhone}" class="ct-phone">📞 ${conPhone}</a>`:''}
+        </div>`;
+
+      // 3 ER shifts
+      shifts.forEach(s => {
+        const names = orthoNames(e[s.key]);
+        const isActive = s.key === orthoActive;
+        html += `<div class="shift-section-block ${isActive?'active-shift':''}" style="${isActive?'--shift-color:'+s.color:''}">
+          <div class="shift-section-head" style="${isActive?'background:'+s.bg:''}">
+            <span>${s.icon}</span>
+            <span style="color:${s.color};">${s.label}</span>
+            ${isActive?`<span class="shift-now-badge" style="background:${s.color};color:#000;">الآن</span>`:''}
+            <span class="shift-time-label">${s.time}</span>
+          </div>
+          <div class="shift-people-list">
+            ${names.map(n => orthoRow(n, 'مقيم طوارئ', s)).join('')}
+          </div>
+        </div>`;
+      });
+
+      container.innerHTML = html;
+      return;
+    }
+
     if (state.currentDept === 'dept_gs') {
       const e = GS_MARCH_SCHED[key];
       if (!e) {
@@ -1199,19 +1285,34 @@ function renderDeptTab(tab) {
         {label:'مقيم أول', name:e.r2, icon:'🥈'},
         {label:'مقيم ثاني', name:e.r3, icon:'👩‍⚕️'},
       ];
+
+      // Plastic surgery residents from PDF
+      const PLASTIC_RESIDENTS = {
+        'MORAYA':   ['Yazid','Rayan','Qirnas'],
+        'ABDULRASHID': ['Yazid','Rayan','Qirnas'],
+        'SHAMMARY': ['Yazid','Rayan','Qirnas'],
+      };
+      const plasticResidents = e.plastic ? (PLASTIC_RESIDENTS[e.plastic.toUpperCase()]||[]) : [];
+
       const plasticBadge = e.plastic
-        ? `<div style="margin:10px 0 4px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:1px;">تجميل</div>
+        ? `<div style="margin:14px 0 6px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:1px;">💉 تجميل مناوب</div>
            <div class="ct-row" style="border-color:rgba(236,72,153,.25);background:rgba(236,72,153,.05);">
              <div class="ct-avatar" style="background:rgba(236,72,153,.15);">💉</div>
-             <div class="ct-info"><div class="ct-name">${e.plastic}</div><div class="ct-role">استشاري تجميل مناوب ✅</div></div>
-             ${getPhone('dept_gs',e.plastic)?`<a href="tel:${getPhone('dept_gs',e.plastic)}" class="ct-phone">📞 ${getPhone('dept_gs',e.plastic)}</a>`:''}
-           </div>`
-        : `<div style="margin:10px 0 4px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:1px;">تجميل</div>
+             <div class="ct-info"><div class="ct-name">${e.plastic}</div><div class="ct-role">استشاري تجميل ✅</div></div>
+             ${getGSPhone(e.plastic)?`<a href="tel:${getGSPhone(e.plastic)}" class="ct-phone">📞 ${getGSPhone(e.plastic)}</a>`:''}
+           </div>
+           ${plasticResidents.map(r=>`<div class="ct-row" style="border-color:rgba(236,72,153,.15);">
+             <div class="ct-avatar" style="background:rgba(236,72,153,.08);">🥼</div>
+             <div class="ct-info"><div class="ct-name">${r}</div><div class="ct-role">مقيم تجميل</div></div>
+             ${getGSPhone(r)?`<a href="tel:${getGSPhone(r)}" class="ct-phone">📞 ${getGSPhone(r)}</a>`:''}
+           </div>`).join('')}`
+        : `<div style="margin:14px 0 6px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:1px;">💉 تجميل مناوب</div>
            <div class="ct-row" style="opacity:.5;"><div class="ct-avatar">💉</div><div class="ct-info"><div class="ct-name" style="color:var(--text3);">لا يوجد تجميل اليوم</div></div></div>`;
+
       container.innerHTML = `
         <div style="margin-bottom:12px;"><span class="badge badge-blue">📅 ${key}</span><span class="badge" style="background:rgba(16,185,129,.1);color:#10b981;margin-right:6px;">🔪 جراحة عامة · 7:30AM-7:30AM</span></div>
         ${gsSlots.filter(s=>s.name).map(s => {
-          const phone = getPhone(state.currentDept, s.name);
+          const phone = getGSPhone(s.name);
           return `<div class="ct-row">
             <div class="ct-avatar" style="background:var(--card);border:1px solid var(--border);">${s.icon}</div>
             <div class="ct-info"><div class="ct-name">${s.name}</div><div class="ct-role">${s.label}</div></div>
@@ -1234,13 +1335,18 @@ function renderDeptTab(tab) {
         </div>`;
       return;
     }
+    // ENT: 1st on call | Specialist 2nd | Consultant 3rd
+    const isDeptENT = state.currentDept === 'dept_ent';
     const slots = [
-      {label:'المناوب الأول', name: entry.r1, cls:'r1'},
-      {label:'المناوب الثاني', name: entry.r2, cls:'r2'},
-      {label:'الاستشاري المناوب', name: entry.consultant, cls:'con'},
+      {label: isDeptENT ? 'المناوب الأول (1st on call)' : 'المناوب الأول',     name: entry.r1,         cls:'r1'},
+      {label: isDeptENT ? 'الأخصائي المناوب (2nd on call)' : 'المناوب الثاني', name: entry.r2,         cls:'r2'},
+      {label: isDeptENT ? 'الاستشاري (3rd on call)' : 'الاستشاري المناوب',     name: entry.consultant, cls:'con'},
     ];
+    const entShiftBadge = state.currentDept === 'dept_ent'
+      ? `<span class="badge" style="background:rgba(139,92,246,.1);color:#8b5cf6;margin-right:6px;">👂 أنف وأذن · 10AM-10AM</span>`
+      : '';
     container.innerHTML = `
-      <div style="margin-bottom:12px;"><span class="badge badge-blue">📅 ${key}</span></div>
+      <div style="margin-bottom:12px;"><span class="badge badge-blue">📅 ${key}</span>${entShiftBadge}</div>
       ${slots.map(s => {
         if (!s.name) return '';
         const phone = getPhone(state.currentDept, s.name);
@@ -1942,6 +2048,36 @@ const PSY_SCHED = {
 };
 
 
+// ===== ORTHOPEDIC SCHEDULE - RAMADAN 1447 =====
+// ER1: 10AM-6PM | ER2: 6PM-2AM | ER3: 2AM-10AM | specialist: 2nd on call 24hr
+const ORTHO_SCHED = {
+  "18/2":{"er1":"ABDULRAHMAN/Ruwaily","er2":"Khalid","er3":"Eithan","specialist":"ABDULRAHMAN","consultant":"Aloteibi"},
+  "19/2":{"er1":"AMIN/Azzam","er2":"Khalid","er3":"Ruwaily","specialist":"AMIN","consultant":"Aloteibi"},
+  "20/2":{"er1":"Wail","er2":"Eithan","er3":"Omar","specialist":"HATTAB","consultant":"Aloteibi"},
+  "21/2":{"er1":"Albaz","er2":"Ruwaily","er3":"Khalid","specialist":"AMIN","consultant":"Aloteibi"},
+  "22/2":{"er1":"EMAN/Wail","er2":"Tariq","er3":"Azzam","specialist":"EMAN","consultant":"Aloteibi"},
+  "23/2":{"er1":"ALAA/Wail","er2":"Omar","er3":"Eithan","specialist":"ALAA","consultant":"Abdelelah"},
+  "24/2":{"er1":"ABDULRAHMAN/Tariq","er2":"Wail","er3":"Azzam","specialist":"ABDULRAHMAN","consultant":"Abdelelah"},
+  "25/2":{"er1":"HATTAB/Albaz","er2":"Omar","er3":"Tariq","specialist":"HATTAB","consultant":"Abdelelah"},
+  "26/2":{"er1":"WALEED/Khalid","er2":"Eithan","er3":"Wail","specialist":"WALEED","consultant":"Abdelelah"},
+  "27/2":{"er1":"Ruwaily","er2":"Albaz","er3":"Khalid","specialist":"ALAA","consultant":"Abdelelah"},
+  "28/2":{"er1":"Eithan","er2":"Wail","er3":"Omar","specialist":"WALEED","consultant":"Abdelelah"},
+  "1/3":{"er1":"EMAN/Tariq","er2":"Ruwaily","er3":"Azzam","specialist":"EMAN","consultant":"Amgad"},
+  "2/3":{"er1":"HATTAB/Albaz","er2":"Tariq","er3":"Omar","specialist":"HATTAB","consultant":"Amgad"},
+  "3/3":{"er1":"AMIN/Albaz","er2":"Khalid","er3":"Ruwaily","specialist":"AMIN","consultant":"Amgad"},
+  "4/3":{"er1":"WALEED/Wail","er2":"Azzam","er3":"Tariq","specialist":"WALEED","consultant":"Amgad"},
+  "5/3":{"er1":"ABDULRAHMAN/Wail","er2":"Tariq","er3":"Ruwaily","specialist":"ABDULRAHMAN","consultant":"Amgad"},
+  "6/3":{"er1":"Eithan","er2":"Azzam","er3":"Wail","specialist":"SULAIMAN","consultant":"Amgad"},
+  "7/3":{"er1":"Ruwaily","er2":"Omar","er3":"Eithan","specialist":"ABDULRAHMAN","consultant":"Amgad"},
+  "8/3":{"er1":"AMIN/Ruwaily","er2":"Khalid","er3":"Omar","specialist":"AMIN","consultant":"Tegani"},
+  "9/3":{"er1":"WALEED/Tariq","er2":"Albaz","er3":"Khalid","specialist":"WALEED","consultant":"Tegani"},
+  "10/3":{"er1":"SULAIMAN/Azzam","er2":"Omar","er3":"Albaz","specialist":"SULAIMAN","consultant":"Tegani"},
+  "11/3":{"er1":"EMAN/Ruwaily","er2":"Omar","er3":"Khalid","specialist":"EMAN","consultant":"Tegani"},
+  "12/3":{"er1":"ALAA/Eithan","er2":"Wail","er3":"Azzam","specialist":"SULAIMAN","consultant":"Tegani"},
+  "13/3":{"er1":"Omar","er2":"Wail","er3":"Azzam","specialist":"SULAIMAN","consultant":"Tegani"},
+  "14/3":{"er1":"Tariq","er2":"Eithan","er3":"Omar","specialist":"ALAA","consultant":"Tegani"},
+};
+
 const PRELOADED_DEPTS = {
   dept_optha: {
     id:'dept_optha', nameAr:'طب العيون', nameEn:'Ophthalmology', icon:'👁️',
@@ -2000,146 +2136,32 @@ const PRELOADED_DEPTS = {
   dept_ortho: {
     id:'dept_ortho', nameAr:'العظام والمفاصل', nameEn:'Orthopedic', icon:'🦴',
     consultants:[
-      {id:'oc1',name:'Dr. Aloteibi',phone:'0504662265',role:'consultant'},
-      {id:'oc2',name:'Dr. Abdelelah',phone:'0558700202',role:'consultant'},
-      {id:'oc3',name:'Dr. Altigani',phone:'0509234448',role:'consultant'},
-      {id:'oc4',name:'Dr. Amgad',phone:'0553214587',role:'consultant'},
-      {id:'oc5',name:'Dr. Altayeb',phone:'0550153193',role:'consultant'},
+      {id:'c1',name:'Aloteibi',phone:'0505327673'},
+      {id:'c2',name:'Abdelelah',phone:'0533333705'},
+      {id:'c3',name:'Amgad',phone:'0503448999'},
+      {id:'c4',name:'Tegani',phone:'0569696200'},
+      {id:'c5',name:'Altayeb',phone:'0505315174'},
     ],
     specialists:[
-      {id:'os1',name:'Dr. Hattab',phone:'0540378163',role:'specialist'},
-      {id:'os2',name:'Dr. Waleed',phone:'0569046197',role:'specialist'},
-      {id:'os3',name:'Dr. Alaa',phone:'0533457448',role:'specialist'},
-      {id:'os4',name:'Dr. Sulaiman',phone:'0505105018',role:'specialist'},
-      {id:'os5',name:'Dr. Abdulrahman',phone:'0561622294',role:'specialist'},
-      {id:'os6',name:'Dr. Amin',phone:'0506094292',role:'specialist'},
-      {id:'os7',name:'Dr. Eman',phone:'0544010888',role:'specialist'},
+      {id:'s1',name:'ABDULRAHMAN',phone:'0541609888'},
+      {id:'s2',name:'WALEED',phone:'0555068787'},
+      {id:'s3',name:'SULAIMAN',phone:'0550866500'},
+      {id:'s4',name:'ALAA',phone:'0566563131'},
+      {id:'s5',name:'EMAN',phone:'0507272749'},
+      {id:'s6',name:'HATTAB',phone:'0508111148'},
+      {id:'s7',name:'AMIN',phone:'0543434437'},
     ],
     residents:[
-      {id:'or1',name:'Dr. Albaz',phone:'0552154845',role:'resident'},
-      {id:'or2',name:'Dr. Omar',phone:'0533944952',role:'resident'},
-      {id:'or3',name:'Dr. Azzam',phone:'0551155653',role:'resident'},
-      {id:'or4',name:'Dr. Eithan',phone:'0540636489',role:'resident'},
-      {id:'or5',name:'Dr. Alruwaily',phone:'0504955442',role:'resident'},
-      {id:'or6',name:'Dr. Tariq',phone:'0507121121',role:'resident'},
-      {id:'or7',name:'Dr. Wael',phone:'0555066635',role:'resident'},
-      {id:'or8',name:'Dr. Khalid',phone:'0554409951',role:'resident'},
+      {id:'r1',name:'Khalid',phone:'0565252635'},
+      {id:'r2',name:'Azzam',phone:'0501155779'},
+      {id:'r3',name:'Eithan',phone:'0556677881'},
+      {id:'r4',name:'Ruwaily',phone:'0556677882'},
+      {id:'r5',name:'Wail',phone:'0556677883'},
+      {id:'r6',name:'Omar',phone:'0556677884'},
+      {id:'r7',name:'Tariq',phone:'0556677885'},
+      {id:'r8',name:'Albaz',phone:'0556677886'},
     ],
-    schedule:{
-      "18/2":{r1:"ABDULRAHMAN",r2:"TARIQ",consultant:"Aloteibi"},
-      "19/2":{r1:"AMIN",r2:"RUWAILY",consultant:"Aloteibi"},
-      "20/2":{r1:"HATTAB",r2:"EITHAN",consultant:"Aloteibi"},
-      "21/2":{r1:"AMIN",r2:"KHALID",consultant:"Aloteibi"},
-      "22/2":{r1:"EMAN",r2:"TARIQ",consultant:"Aloteibi"},
-      "23/2":{r1:"ALAA",r2:"OMAR",consultant:"Abdelelah"},
-      "24/2":{r1:"ABDULRAHMAN",r2:"AZZAM",consultant:"Abdelelah"},
-      "25/2":{r1:"HATTAB",r2:"TARIQ",consultant:"Abdelelah"},
-      "26/2":{r1:"WALEED",r2:"WAEL",consultant:"Abdelelah"},
-      "27/2":{r1:"ALAA",r2:"KHALID",consultant:"Abdelelah"},
-      "28/2":{r1:"WALEED",r2:"OMAR",consultant:"Abdelelah"},
-      "1/3":{r1:"EMAN",r2:"AZZAM",consultant:"Amgad"},
-      "2/3":{r1:"HATTAB",r2:"OMAR",consultant:"Amgad"},
-      "3/3":{r1:"AMIN",r2:"RUWAILY",consultant:"Amgad"},
-      "4/3":{r1:"WALEED",r2:"TARIQ",consultant:"Amgad"},
-      "5/3":{r1:"ABDULRAHMAN",r2:"RUWAILY",consultant:"Amgad"},
-      "6/3":{r1:"SULAIMAN",r2:"WAEL",consultant:"Amgad"},
-      "7/3":{r1:"ABDULRAHMAN",r2:"EITHAN",consultant:"Amgad"},
-      "8/3":{r1:"AMIN",r2:"OMAR",consultant:"Altigani"},
-      "9/3":{r1:"WALEED",r2:"KHALID",consultant:"Altigani"},
-      "10/3":{r1:"SULAIMAN",r2:"ALBAZ",consultant:"Altigani"},
-      "11/3":{r1:"EMAN",r2:"KHALID",consultant:"Altigani"},
-      "12/3":{r1:"ALAA",r2:"TARIQ",consultant:"Altigani"},
-      "13/3":{r1:"SULAIMAN",r2:"AZZAM",consultant:"Altigani"},
-      "14/3":{r1:"ALAA",r2:"OMAR",consultant:"Altigani"},
-    }
-  },
-  dept_im: {
-    id:'dept_im', nameAr:'الباطنية', nameEn:'Internal Medicine', icon:'🩺',
-    consultants:[
-      {id:'imc1',name:'M. Alanazi',phone:'0555531428',role:'consultant'},
-      {id:'imc2',name:'BADRIYA',phone:'0505281699',role:'consultant'},
-      {id:'imc3',name:'NEZAR',phone:'0555629006',role:'consultant'},
-      {id:'imc4',name:'FAISAL',phone:'0558105515',role:'consultant'},
-      {id:'imc5',name:'M. ALYOUSEF',phone:'0557775638',role:'consultant'},
-      {id:'imc6',name:'ZAHRA',phone:'0507099090',role:'consultant'},
-      {id:'imc7',name:'OMALKHAIR',phone:'0539180860',role:'consultant'},
-      {id:'imc8',name:'AFIFI',phone:'0502745102',role:'consultant'},
-      {id:'imc9',name:'HAZIM',phone:'0540664060',role:'consultant'},
-    ],
-    specialists:[
-      {id:'ims1',name:'SHAFIQ',phone:'0509773287',role:'specialist'},
-      {id:'ims2',name:'ALSANIE',phone:'0570618739',role:'specialist'},
-      {id:'ims3',name:'HUSSAIN',phone:'0501266214',role:'specialist'},
-      {id:'ims4',name:'MOTAZ',phone:'0555748611',role:'specialist'},
-      {id:'ims5',name:'BANDER',phone:'0504898563',role:'specialist'},
-      {id:'ims6',name:'AYAT',phone:'0555849458',role:'specialist'},
-      {id:'ims7',name:'SAUD',phone:'0564480323',role:'specialist'},
-      {id:'ims8',name:'ANMAR',phone:'0503546643',role:'specialist'},
-      {id:'ims9',name:'MUAAZ',phone:'0598100291',role:'specialist'},
-      {id:'ims10',name:'ASEEL',phone:'0598100291',role:'specialist'},
-      {id:'ims11',name:'ATHEER',phone:'0543841232',role:'specialist'},
-    ],
-    residents:[
-      {id:'imr1',name:'Y.Nayef',phone:'0560942607',role:'resident'},
-      {id:'imr2',name:'Bedaiwi',phone:'0555336260',role:'resident'},
-      {id:'imr3',name:'Nada',phone:'0553745644',role:'resident'},
-      {id:'imr4',name:'Hajri',phone:'0534633220',role:'resident'},
-      {id:'imr5',name:'Hamdah',phone:'0531059331',role:'resident'},
-      {id:'imr6',name:'Alsahwan',phone:'0531263367',role:'resident'},
-      {id:'imr7',name:'Oqab',phone:'0554236762',role:'resident'},
-      {id:'imr8',name:'Moath Y.',phone:'0554133372',role:'resident'},
-      {id:'imr9',name:'Lafi',phone:'0536396096',role:'resident'},
-      {id:'imr10',name:'Alluhaidan',phone:'0555258077',role:'resident'},
-      {id:'imr11',name:'Majed',phone:'0551126972',role:'resident'},
-      {id:'imr12',name:'S.Alomary',phone:'0541106205',role:'resident'},
-      {id:'imr13',name:'Rayed',phone:'0540402437',role:'resident'},
-      {id:'imr14',name:'Othman',phone:'0590355755',role:'resident'},
-      {id:'imr15',name:'Abrar',phone:'0555422130',role:'resident'},
-      {id:'imr16',name:'Talal',phone:'0566664079',role:'resident'},
-      {id:'imr17',name:'Suha',phone:'0534126723',role:'resident'},
-      {id:'imr18',name:'Abdulraouf',phone:'0595725761',role:'resident'},
-      {id:'imr19',name:'Abdulrahman T.',phone:'0501832164',role:'resident'},
-      {id:'imr20',name:'Alqurashi',phone:'0573700488',role:'resident'},
-      {id:'imr21',name:'Enas',phone:'0590569295',role:'resident'},
-      {id:'imr22',name:'Mohannad',phone:'0501998182',role:'resident'},
-      {id:'imr23',name:'Danah',phone:'0557972109',role:'resident'},
-      {id:'imr24',name:'Hadeel',phone:'0573700488',role:'resident'},
-      {id:'imr25',name:'Hadi',phone:'0540664060',role:'resident'},
-      {id:'imr26',name:'Rayyan',phone:'0533300498',role:'resident'},
-      {id:'imr27',name:'A.Alharbi',phone:'0508557350',role:'resident'},
-      {id:'imr28',name:'Shujaa',phone:'0553342821',role:'resident'},
-      {id:'imr29',name:'Othman',phone:'0590355755',role:'resident'},
-    ],
-    schedule:{
-      "15/2":{r1:"Y.Nayef",r2:"Hadi",consultant:"OMALKHAIR"},
-      "16/2":{r1:"Y.Nayef",r2:"Hadi",consultant:"FAISAL"},
-      "17/2":{r1:"Y.Nayef",r2:"Hadi",consultant:"ZAHRA"},
-      "18/2":{r1:"Shujaa",r2:"Othman",consultant:"BADRIYA"},
-      "19/2":{r1:"Shujaa",r2:"Othman",consultant:"FAISAL"},
-      "20/2":{r1:"Hadi",r2:"Enas",consultant:"NEZAR"},
-      "21/2":{r1:"Othman",r2:"A.Alharbi",consultant:"ZAHRA"},
-      "22/2":{r1:"Shujaa",r2:"Othman",consultant:"AFIFI"},
-      "23/2":{r1:"A.Alharbi",r2:"Lafi",consultant:"BADRIYA"},
-      "24/2":{r1:"A.Alharbi",r2:"Lafi",consultant:"FAISAL"},
-      "25/2":{r1:"A.Alharbi",r2:"Majed",consultant:"HAZIM"},
-      "26/2":{r1:"Alluhaidan",r2:"Majed",consultant:"BADRIYA"},
-      "27/2":{r1:"Hadeel",r2:"Moath Y.",consultant:"ZAHRA"},
-      "28/2":{r1:"S.Alomary",r2:"Hadi",consultant:"HAZIM"},
-      "1/3":{r1:"S.Alomary",r2:"Majed",consultant:"M.ALYOUSEF"},
-      "2/3":{r1:"S.Alomary",r2:"Abdulrahman T.",consultant:"FAISAL"},
-      "3/3":{r1:"Alluhaidan",r2:"Rayed",consultant:"AFIFI"},
-      "4/3":{r1:"Hamdah",r2:"Abdulrahman T.",consultant:"NEZAR"},
-      "5/3":{r1:"Hamdah",r2:"Abdulrahman T.",consultant:"HAZIM"},
-      "6/3":{r1:"Mohannad",r2:"Danah",consultant:"M.ALYOUSEF"},
-      "7/3":{r1:"Hamdah",r2:"A.Alharbi",consultant:"AFIFI"},
-      "8/3":{r1:"S.Alomary",r2:"Rayed",consultant:"M.ALYOUSEF"},
-      "9/3":{r1:"Hamdah",r2:"Rayed",consultant:"HAZIM"},
-      "10/3":{r1:"Alsahwan",r2:"Oqab",consultant:"NEZAR"},
-      "11/3":{r1:"Alsahwan",r2:"Oqab",consultant:"M.ALYOUSEF"},
-      "12/3":{r1:"Alsahwan",r2:"Oqab",consultant:"AFIFI"},
-      "13/3":{r1:"Alluhaidan",r2:"S.Alomary",consultant:"ZAHRA"},
-      "14/3":{r1:"Majed",r2:"Rayed",consultant:"NEZAR"},
-    }
+    schedule: ORTHO_SCHED,
   },
   dept_gs: {
     id:'dept_gs', nameAr:'الجراحة العامة', nameEn:'General Surgery', icon:'🔪',
@@ -2187,7 +2209,7 @@ const PRELOADED_DEPTS = {
       {id:'r17',name:'Abdulwahab',phone:'0560048719'},
     ],
     schedule: GS_MARCH_SCHED,
-  }
+  },
   dept_ent: {
     id:'dept_ent', nameAr:'أنف وأذن وحنجرة', nameEn:'ENT', icon:'👂',
     consultants:[
@@ -2320,6 +2342,31 @@ function getExtraPhone(name) {
 }
 
 
+
+
+// ===== GS DIRECT PHONE LOOKUP =====
+const GS_PHONES = {
+  'ALBAHOOTH':'0555412004','ESRAA':'0563024499','ALMASOUD':'0555410004',
+  'FAHAD':'0500054455','GHADEER':'0506336561','ALANGRI':'0545532098',
+  'SHANAWANI':'0505815993','YASSER':'0568001305','SAUD':'0562151717',
+  'ALTASSAN':'0545333357','ALDARWISH':'0566670731','SORROR':'0595022800',
+  'FERAS':'0554531866','HASSAN':'0505866946','NAWAF':'0594447782',
+  'AHMED':'0555078820','LYLA':'0557357271','AMANI':'0500396136',
+  'ABDULJABAR':'0562545446','MANAL':'0501286969',
+  'AMIRAH':'0554141529','NOURA':'0561192015','GHADAH':'0536229549',
+  'BOTOL':'0554638777','NADA':'0543314515','NOUF':'0559618991',
+  'RAGHAD':'0590850599','ZINAB':'0580201566','ABDULWAHAB':'0560048719',
+  'GHAIDA':'0504627835','DINA':'0558728425','MALIK':'0559808353',
+  'ROBA':'0508289459','FARIS':'0555990214','IBTISAM':'0506529725',
+  'ABDULELAH':'0545868103',
+  // Plastic
+  'MORAYA':'0567399676','ABDULRASHID':'0557675568','SHAMMARY':'0555576794',
+  'YAZID':'0505766733','QIRNAS':'0535874788','RAYAN':'0554593576',
+};
+function getGSPhone(name) {
+  if (!name) return '';
+  return GS_PHONES[name.toUpperCase()] || GS_PHONES[name.toUpperCase().replace(/ /g,'')] || '';
+}
 
 // Load saved data then merge any new preloaded depts
 load();
