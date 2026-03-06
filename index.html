@@ -543,9 +543,53 @@ select.form-input { cursor: pointer; }
 @media (max-width: 768px) {
   .sidebar { transform: translateX(100%); }
   .sidebar.open { transform: translateX(0); }
-  .main { margin-right: 0; max-width: 100vw; padding: 16px 12px; }
-  .oncall-grid { grid-template-columns: 1fr; }
-  .form-row { grid-template-columns: 1fr; }
+  
+  .main {
+    margin-right: 0 !important;
+    max-width: 100vw !important;
+    width: 100vw !important;
+    padding: 12px 10px !important;
+    box-sizing: border-box !important;
+    overflow-x: hidden !important;
+  }
+  
+  /* Dashboard cards full width */
+  #dashboardCards > div {
+    width: 100% !important;
+    box-sizing: border-box !important;
+    margin-bottom: 10px !important;
+    padding: 12px !important;
+  }
+  
+  /* Oncall grid: 2 columns on mobile */
+  .oncall-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 8px !important;
+  }
+  .oncall-slot { padding: 10px 6px !important; }
+  .slot-name { font-size: 12px !important; }
+  .slot-label { font-size: 10px !important; }
+  .slot-phone { font-size: 10px !important; }
+
+  /* Schedule table: hide on mobile, show as cards */
+  .schedule-table { display: none !important; }
+  .schedule-cards { display: block !important; }
+
+  /* Tabs scrollable */
+  .tab-bar {
+    overflow-x: auto !important;
+    white-space: nowrap !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding-bottom: 4px !important;
+  }
+  .tab { font-size: 12px !important; padding: 6px 10px !important; }
+
+  /* CT rows */
+  .ct-phone { font-size: 12px !important; }
+  
+  /* Forms */
+  .form-row { grid-template-columns: 1fr !important; }
+  
   .mobile-menu-btn { display: flex !important; }
 }
 .mobile-menu-btn {
@@ -574,6 +618,38 @@ select.form-input { cursor: pointer; }
 .divider { height: 1px; background: var(--border); margin: 16px 0; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media(max-width:600px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* ===== SCHEDULE CARDS (mobile) ===== */
+.schedule-cards { display: none; }
+.sched-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.sched-card-date {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--accent);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sched-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.sched-card-row:last-child { border-bottom: none; }
+.sched-card-label { color: var(--text3); font-size: 11px; }
+.sched-card-val { font-weight: 700; color: var(--text); }
+
 </style>
 </head>
 <body>
@@ -621,6 +697,10 @@ select.form-input { cursor: pointer; }
     <div class="today-badge">
       <div class="pulse"></div>
       <span id="todayText">—</span>
+    </div>
+    <div id="sheetsStatus" onclick="fetchFromSheets()" title="اضغط للمزامنة الآن"
+      style="font-size:10px;color:var(--text3);cursor:pointer;padding:3px 8px;background:var(--surface);border-radius:6px;border:1px solid var(--border);margin-right:8px;">
+      ⏳ جاري...
     </div>
   </div>
 
@@ -868,6 +948,29 @@ select.form-input { cursor: pointer; }
 
 <script>
 // ========== STATE ==========
+let sheetsOnCallOverrides = {};
+// ===== SUBSTITUTES STATE =====
+let substitutes = JSON.parse(localStorage.getItem('ksh_subs_v1') || '{}');
+function saveSubs() {
+  const todayKey = getTodayKey();
+  for (const k of Object.keys(substitutes)) {
+    if (substitutes[k].day !== todayKey) delete substitutes[k];
+  }
+  localStorage.setItem('ksh_subs_v1', JSON.stringify(substitutes));
+}
+function getSub(deptId, role, originalName) {
+  saveSubs();
+  return substitutes[deptId+':'+role+':'+originalName] || null;
+}
+function setSub(deptId, role, originalName, subName, subPhone) {
+  substitutes[deptId+':'+role+':'+originalName] = { subName, subPhone, originalName, day: getTodayKey(), deptId, role };
+  saveSubs();
+}
+function clearSub(deptId, role, originalName) {
+  delete substitutes[deptId+':'+role+':'+originalName];
+  saveSubs();
+}
+
 let state = {
   departments: {},
   currentDept: null,
@@ -875,7 +978,7 @@ let state = {
   pendingExtraction: null,
 };
 
-const STORAGE_KEY = 'ksh_oncall_v3';
+const STORAGE_KEY = 'ksh_oncall_v4';
 
 // ========== PERSISTENCE ==========
 function save() {
@@ -889,15 +992,21 @@ function load() {
 }
 
 function mergePreloaded() {
-  // Always merge preloaded depts — adds missing ones, never overwrites user edits
-  let changed = false;
+  // Always force-update ALL preloaded dept schedules to latest data
   Object.values(PRELOADED_DEPTS).forEach(pd => {
     if (!state.departments[pd.id]) {
+      // Add new dept
       state.departments[pd.id] = pd;
-      changed = true;
+    } else {
+      // Force update schedule AND staff info from preloaded data
+      state.departments[pd.id].schedule = pd.schedule;
+      // Also update staff lists in case phones changed
+      state.departments[pd.id].consultants = pd.consultants;
+      state.departments[pd.id].specialists = pd.specialists;
+      state.departments[pd.id].residents   = pd.residents;
     }
   });
-  if (changed) save();
+  save();
 }
 
 function resetToDefaults() {
@@ -912,25 +1021,45 @@ function resetToDefaults() {
 }
 
 // ========== DATE ==========
-function getSADate() {
+function getSADate(useScheduleDay = false) {
   const now = new Date();
   const sa = new Date(now.getTime() + 3 * 3600 * 1000);
-  return {
-    d: sa.getUTCDate(),
-    m: sa.getUTCMonth() + 1,
-    dw: sa.getUTCDay(),
-    full: sa,
-  };
+  let d = sa.getUTCDate();
+  let m = sa.getUTCMonth() + 1;
+  let dw = sa.getUTCDay();
+  if (useScheduleDay) {
+    // Night shift (12AM–10AM) belongs to the PREVIOUS schedule day
+    const h = sa.getUTCHours();
+    if (h >= 0 && h < 10) {
+      // Go back one day
+      const prev = new Date(sa.getTime() - 24 * 3600 * 1000);
+      d  = prev.getUTCDate();
+      m  = prev.getUTCMonth() + 1;
+      dw = prev.getUTCDay();
+    }
+  }
+  return { d, m, dw, full: sa };
 }
 function getTodayKey() {
-  const {d,m} = getSADate();
+  // Uses schedule day: before 10AM = yesterday's schedule
+  const {d, m} = getSADate(true);
+  return `${d}/${m}`;
+}
+function getRealTodayKey() {
+  // Real calendar date (for display in header)
+  const {d, m} = getSADate(false);
   return `${d}/${m}`;
 }
 function formatArabicDate() {
-  const {d,m,dw} = getSADate();
+  // Header always shows real calendar date
+  const {d, m, dw} = getSADate(false);
   const days = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
   const months = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
-  return `${days[dw]} ${d} ${months[m-1]}`;
+  // If we're in night shift (12AM–10AM), show yesterday's schedule date with note
+  const h = getSADate(false).full.getUTCHours();
+  const isNightShift = h >= 0 && h < 10;
+  const suffix = isNightShift ? ' 🌙' : '';
+  return `${days[dw]} ${d} ${months[m-1]}${suffix}`;
 }
 
 // ========== PHONE LOOKUP ==========
@@ -939,10 +1068,28 @@ function getPhone(deptId, name) {
   const dept = state.departments[deptId];
   if (!dept) return null;
   const all = [...(dept.consultants||[]), ...(dept.specialists||[]), ...(dept.residents||[])];
-  const up = name.toUpperCase().trim();
+  const up = name.toUpperCase().replace(/DR\.\s*/g,'').trim();
+  // Pass 1: exact match (after stripping DR.)
   for (const p of all) {
     const pn = p.name.toUpperCase().replace(/DR\.\s*/g,'').trim();
-    if (pn === up || p.name.toUpperCase().trim() === up) return p.phone;
+    if (pn === up) return p.phone;
+  }
+  // Pass 2: first-word match (e.g. "Imad" matches "Imad Shabshoub")
+  for (const p of all) {
+    const pn = p.name.toUpperCase().replace(/DR\.\s*/g,'').trim();
+    const firstWord = pn.split(/\s+/)[0];
+    if (firstWord === up || up === firstWord) return p.phone;
+  }
+  // Pass 3: last-word match (e.g. "Khalfi" matches "Khamisti Khalfi")
+  for (const p of all) {
+    const pn = p.name.toUpperCase().replace(/DR\.\s*/g,'').trim();
+    const lastWord = pn.split(/\s+/).pop();
+    if (lastWord === up) return p.phone;
+  }
+  // Pass 4: partial contains match
+  for (const p of all) {
+    const pn = p.name.toUpperCase().replace(/DR\.\s*/g,'').trim();
+    if (pn.includes(up) || up.includes(pn.split(/\s+/)[0])) return p.phone;
   }
   return null;
 }
@@ -1009,15 +1156,24 @@ function renderDashboard() {
     const con = entry?.consultant || '—';
     return `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:12px;cursor:pointer;transition:border .2s;" 
+           data-dept-id="${d.id}"
            onclick="showView('dept','${d.id}')" 
            onmouseover="this.style.borderColor='var(--border2)'" 
            onmouseout="this.style.borderColor='var(--border)'">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
           <span style="font-size:22px;">${d.icon}</span>
-          <div>
+          <div style="flex:1;">
             <div style="font-size:15px;font-weight:700;">${d.nameAr}</div>
-            <div style="font-size:11px;color:var(--text3);">${d.nameEn}</div>
+            <div style="font-size:11px;color:var(--text3);">${d.nameEn}${(() => {
+              const activeSubs = Object.values(substitutes).filter(s => s.deptId === d.id && s.day === key);
+              return activeSubs.length > 0 ? ` <span style="background:#f59e0b;color:#000;border-radius:4px;padding:1px 5px;font-size:10px;font-weight:800;">${activeSubs.length} بديل</span>` : '';
+            })()}</div>
           </div>
+          <button onclick="event.stopPropagation();openSubModal('${d.id}')" 
+            title="تعيين بديل طارئ"
+            style="background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);color:#f59e0b;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+            🔄 بديل
+          </button>
         </div>
         ${d.id === 'dept_im' ? (() => {
           const imE = IM_SCHED[key];
@@ -1029,6 +1185,52 @@ function renderDashboard() {
             <div style="font-size:10px;font-weight:800;color:${cfg.color};margin-bottom:6px;">${cfg.icon} ${cfg.label} — الآن</div>
             <div style="font-size:13px;font-weight:700;color:var(--text);">${names.join(' · ')}</div>
             <div style="font-size:11px;color:var(--text3);margin-top:4px;">استشاري: <span style="color:var(--text2)">${imE.consultant}</span></div>
+          </div>`;
+        })() : d.id === 'dept_gs' ? (() => {
+          const gsE = GS_MARCH_SCHED[key];
+          if (!gsE) return '<div style="font-size:12px;color:var(--text3);padding:6px 0;">لا توجد بيانات اليوم</div>';
+          return `<div class="oncall-grid" style="grid-template-columns:repeat(4,1fr);">
+            <div class="oncall-slot con">
+              <div class="slot-label">CONS</div>
+              <div class="slot-name">${gsE.consultant||'—'}</div>
+              <div class="slot-phone">${getGSPhone(gsE.consultant)||''}</div>
+            </div>
+            <div class="oncall-slot r1">
+              <div class="slot-label">SP</div>
+              <div class="slot-name">${gsE.sp||'—'}</div>
+              <div class="slot-phone">${getGSPhone(gsE.sp)||''}</div>
+            </div>
+            <div class="oncall-slot r2">
+              <div class="slot-label">Sr</div>
+              <div class="slot-name">${gsE.sr||'—'}</div>
+              <div class="slot-phone">${getGSPhone(gsE.sr)||''}</div>
+            </div>
+            <div class="oncall-slot r2">
+              <div class="slot-label">Jr</div>
+              <div class="slot-name">${gsE.jr||'—'}</div>
+              <div class="slot-phone">${getGSPhone(gsE.jr)||''}</div>
+            </div>
+          </div>
+          ${gsE.plastic ? `<div style="font-size:11px;color:#ec4899;margin-top:6px;">💉 تجميل: ${gsE.plastic}</div>` : '<div style="font-size:11px;color:var(--text3);margin-top:6px;">💉 لا يوجد تجميل اليوم</div>'}`;
+        })() : d.id === 'dept_ortho' ? (() => {
+          const orE = ORTHO_SCHED[key];
+          if (!orE) return '<div style="font-size:12px;color:var(--text3);padding:6px 0;">لا توجد بيانات اليوم</div>';
+          const h = new Date().getHours();
+          const shiftNow = h >= 10 && h < 18 ? orE.er1 : h >= 18 || h < 2 ? orE.er2 : orE.er3;
+          const shiftLabel = h >= 10 && h < 18 ? '10AM-6PM' : h >= 18 || h < 2 ? '6PM-2AM' : '2AM-10AM';
+          return `<div style="background:var(--surface);border-radius:10px;padding:10px 12px;">
+            <div style="font-size:10px;font-weight:800;color:var(--accent);margin-bottom:6px;">🦴 طوارئ الآن (${shiftLabel})</div>
+            <div style="font-size:13px;font-weight:700;color:var(--text);">${shiftNow||'—'}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px;">⭐ أخصائي: <span style="color:var(--text2)">${orE.specialist}</span> · 👨‍⚕️ ${orE.consultant}</div>
+          </div>`;
+        })() : d.id === 'dept_derma' ? (() => {
+          const deE = DERMA_SCHED[key];
+          if (!deE) return '<div style="font-size:12px;color:var(--text3);padding:6px 0;">لا توجد بيانات اليوم</div>';
+          return `<div style="background:var(--surface);border-radius:10px;padding:10px 12px;">
+            <div style="font-size:10px;font-weight:800;color:#ec4899;margin-bottom:6px;">🩺 مناوب الجلدية</div>
+            <div style="font-size:13px;font-weight:700;color:var(--text);">${deE.r1||'—'}</div>
+            ${deE.r2?`<div style="font-size:11px;color:var(--text3);margin-top:4px;">🥈 ${deE.r2}${deE.r3?' · 🥉 '+deE.r3:''}</div>`:''}
+            ${deE.coord?`<div style="font-size:10px;color:var(--text3);margin-top:2px;">📋 ${deE.coord}</div>`:''}
           </div>`;
         })() : `<div class="oncall-grid" style="grid-template-columns:repeat(3,1fr);">
           <div class="oncall-slot r1">
@@ -1049,6 +1251,30 @@ function renderDashboard() {
         </div>`}
       </div>`;
   }).join('');
+
+  // Inject sheets on-call overrides
+  injectSheetsOnCall();
+}
+
+function injectSheetsOnCall() {
+  if (!sheetsOnCallOverrides || !Object.keys(sheetsOnCallOverrides).length) return;
+  const container = document.getElementById('dashboardCards');
+  if (!container) return;
+  Object.values(state.departments).forEach(d => {
+    const overrides = sheetsOnCallOverrides[d.id];
+    if (!overrides || !overrides.length) return;
+    // Find cards with data-dept-id attribute
+    container.querySelectorAll('[data-dept-id="' + d.id + '"]').forEach(card => {
+      const old = card.querySelector('.sheets-oncall-banner');
+      if (old) old.remove();
+      const banner = document.createElement('div');
+      banner.className = 'sheets-oncall-banner';
+      banner.style.cssText = 'margin-top:10px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);border-radius:10px;padding:10px 12px;';
+      banner.innerHTML = '<div style="font-size:10px;font-weight:800;color:#22c55e;margin-bottom:6px;">🟢 مناوب الآن</div>' +
+        overrides.map(o => '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;"><div style="font-size:13px;font-weight:700;">' + o.name + '</div><div>' + (o.phone ? '<a href="tel:' + o.phone + '" style="font-size:12px;color:#22c55e;" onclick="event.stopPropagation()">' + o.phone + '</a>' : '') + ' <span style="font-size:10px;color:var(--text3);">' + (o.role||'') + '</span></div></div>').join('');
+      card.appendChild(banner);
+    });
+  });
 }
 
 // ========== DEPT VIEW ==========
@@ -1195,14 +1421,7 @@ function renderDeptTab(tab) {
         return;
       }
       function getOrthoPhone(name) {
-        const dept = state.departments['dept_ortho'];
-        if (!dept) return '';
-        const all = [...(dept.consultants||[]),...(dept.specialists||[]),...(dept.residents||[])];
-        const up = name.toUpperCase().trim();
-        for (const p of all) {
-          if (p.name.toUpperCase().trim() === up) return p.phone || '';
-        }
-        return '';
+        return getOrthoPhoneDirect(name);
       }
       function orthoNames(str) {
         return (str||'').split('/').map(n=>n.trim()).filter(Boolean);
@@ -1280,10 +1499,10 @@ function renderDeptTab(tab) {
         return;
       }
       const gsSlots = [
-        {label:'استشاري مناوب', name:e.consultant, icon:'👨‍⚕️'},
-        {label:'أخصائي مناوب', name:e.r1, icon:'🥇'},
-        {label:'مقيم أول', name:e.r2, icon:'🥈'},
-        {label:'مقيم ثاني', name:e.r3, icon:'👩‍⚕️'},
+        {label:'استشاري مناوب (CONS)', name:e.consultant, icon:'👨‍⚕️'},
+        {label:'أخصائي مناوب (SP)', name:e.sp, icon:'⭐'},
+        {label:'مقيم أول (Sr)', name:e.sr, icon:'🥇'},
+        {label:'مقيم ثاني (Jr)', name:e.jr, icon:'🥈'},
       ];
 
       // Plastic surgery residents from PDF
@@ -1335,6 +1554,51 @@ function renderDeptTab(tab) {
         </div>`;
       return;
     }
+    // ── Dermatology ──
+    if (state.currentDept === 'dept_derma') {
+      const de = DERMA_SCHED[key];
+      if (!de) {
+        container.innerHTML = `<div class="empty-state"><div class="empty-icon">📅</div><h3>لا توجد بيانات اليوم (${key})</h3></div>`;
+        return;
+      }
+      const DERMA_PHONE_MAP = {
+        'د منشي':'0530012054','د. محمد منشي':'0530012054',
+        'د وائل':'0561118911','د. وائل اليحي':'0561118911',
+        'د يزيد':'0542400325','د. يزيد الهذال':'0542400325',
+        'د الهويش':'0553229339','د. عبدالعزيز الهويش':'0553229339',
+        'د السحيم':'0507960291','د. عبدالعزيز السحيم':'0507960291',
+        'د صالحة':'0542057833','د. صالحة حكمي':'0542057833',
+        'د. دالل الدوسري':'0545034956','د. غادة القرني':'0507871465',
+      };
+      function getDermaPhone(name) {
+        if (!name) return '';
+        return DERMA_PHONE_MAP[name] || DERMA_PHONE_MAP[name.trim()] || '';
+      }
+      const slots = [
+        {label:'المناوب الأول (1st on-call)', name: de.r1, cls:'r1'},
+        {label:'المناوب الثاني (2nd on-call)', name: de.r2, cls:'r2'},
+        {label:'المناوب الثالث (3rd on-call)', name: de.r3, cls:'r3'},
+      ].filter(s => s.name);
+      const coordText = de.coord ? `<div class="ct-row" style="opacity:.7;"><div class="ct-avatar">📋</div><div class="ct-info"><div class="ct-name">${de.coord}</div><div class="ct-role">تنسيق إحالة</div></div></div>` : '';
+      container.innerHTML = `
+        <div style="margin-bottom:12px;">
+          <span class="badge badge-blue">📅 ${key}</span>
+          <span class="badge" style="background:rgba(236,72,153,.1);color:#ec4899;margin-right:6px;">🩺 الجلدية · مناوبة يومية</span>
+        </div>
+        ${slots.map(s => {
+          const phone = getDermaPhone(s.name);
+          return `<div class="ct-row">
+            <div class="ct-avatar" style="background:var(--card);border:1px solid var(--border);">
+              ${s.cls==='r1'?'🥇':s.cls==='r2'?'🥈':'🥉'}
+            </div>
+            <div class="ct-info"><div class="ct-name">${s.name}</div><div class="ct-role">${s.label}</div></div>
+            ${phone ? `<a href="tel:${phone}" class="ct-phone">📞 ${phone}</a>` : ''}
+          </div>`;
+        }).join('')}
+        ${coordText}`;
+      return;
+    }
+
     // ENT: 1st on call | Specialist 2nd | Consultant 3rd
     const isDeptENT = state.currentDept === 'dept_ent';
     const slots = [
@@ -1398,7 +1662,7 @@ function renderDeptTab(tab) {
     const entries = Object.entries(schedule).sort((a,b) => {
       const [da,ma] = a[0].split('/').map(Number);
       const [db,mb] = b[0].split('/').map(Number);
-      return mb !== ma ? mb - ma : db - da;
+      return ma !== mb ? ma - mb : da - db;
     });
     const todayKey = getTodayKey();
     let html = `<div class="row" style="margin-bottom:14px;">
@@ -1408,6 +1672,57 @@ function renderDeptTab(tab) {
     if (entries.length === 0) {
       html += '<div class="empty-state"><div class="empty-icon">📅</div><h3>لا يوجد جدول</h3><p>ارفع ملف PDF أو أضف يدوياً</p></div>';
     } else {
+      const isGS = state.currentDept === 'dept_gs';
+      const isOrtho = state.currentDept === 'dept_ortho';
+      const isDerma = state.currentDept === 'dept_derma';
+      if (isGS) {
+        html += `<table class="schedule-table">
+          <thead><tr>
+            <th>التاريخ</th><th>CONS</th><th>SP</th><th>Sr</th><th>Jr</th><th>تجميل</th><th></th>
+          </tr></thead><tbody>`;
+        html += entries.map(([key, entry]) => `
+          <tr>
+            <td><span class="sched-day">${key}</span>${key===todayKey?' <span class="badge badge-green" style="font-size:10px;">اليوم</span>':''}</td>
+            <td><span class="sched-name con c">${entry.consultant||'—'}</span></td>
+            <td><span class="sched-name r1c">${entry.sp||'—'}</span></td>
+            <td><span class="sched-name r2c">${entry.sr||'—'}</span></td>
+            <td><span class="sched-name r2c">${entry.jr||'—'}</span></td>
+            <td><span style="color:#ec4899;font-size:12px;">${entry.plastic||'—'}</span></td>
+            <td><button class="btn-icon" onclick="deleteScheduleEntry('${key}')">🗑</button></td>
+          </tr>`).join('');
+        html += '</tbody></table>';
+      } else if (isOrtho) {
+        html += `<table class="schedule-table">
+          <thead><tr>
+            <th>التاريخ</th><th>ER1 (10AM-6PM)</th><th>ER2 (6PM-2AM)</th><th>ER3 (2AM-10AM)</th><th>أخصائي 24h</th><th>استشاري</th><th></th>
+          </tr></thead><tbody>`;
+        html += entries.map(([key, entry]) => `
+          <tr>
+            <td><span class="sched-day">${key}</span>${key===todayKey?' <span class="badge badge-green" style="font-size:10px;">اليوم</span>':''}</td>
+            <td><span class="sched-name r1c">${entry.er1||'—'}</span></td>
+            <td><span class="sched-name r2c">${entry.er2||'—'}</span></td>
+            <td><span class="sched-name r2c">${entry.er3||'—'}</span></td>
+            <td><span class="sched-name r1c">${entry.specialist||'—'}</span></td>
+            <td><span class="sched-name con c">${entry.consultant||'—'}</span></td>
+            <td><button class="btn-icon" onclick="deleteScheduleEntry('${key}')">🗑</button></td>
+          </tr>`).join('');
+        html += '</tbody></table>';
+      } else if (isDerma) {
+        html += `<table class="schedule-table">
+          <thead><tr>
+            <th>التاريخ</th><th>مناوب أول</th><th>مناوب ثاني</th><th>مناوب ثالث</th><th>تنسيق</th><th></th>
+          </tr></thead><tbody>`;
+        html += entries.map(([key, entry]) => `
+          <tr>
+            <td><span class="sched-day">${key}</span>${key===todayKey?' <span class="badge badge-green" style="font-size:10px;">اليوم</span>':''}</td>
+            <td><span class="sched-name r1c">${entry.r1||'—'}</span></td>
+            <td><span class="sched-name r2c">${entry.r2||'—'}</span></td>
+            <td><span class="sched-name r2c">${entry.r3||'—'}</span></td>
+            <td><span style="font-size:11px;color:var(--text2);">${entry.coord||'—'}</span></td>
+            <td><button class="btn-icon" onclick="deleteScheduleEntry('${key}')">🗑</button></td>
+          </tr>`).join('');
+        html += '</tbody></table>';
+      } else {
       html += `<table class="schedule-table">
         <thead><tr>
           <th>التاريخ</th><th>المناوب الأول</th><th>المناوب الثاني</th><th>الاستشاري</th><th></th>
@@ -1421,8 +1736,51 @@ function renderDeptTab(tab) {
           <td><button class="icon-btn danger" onclick="deleteScheduleEntry('${key}')">🗑️</button></td>
         </tr>`).join('');
       html += '</tbody></table>';
+      } // end else
     }
-    container.innerHTML = html;
+
+    // ── Mobile card view ──
+    const isGS2 = state.currentDept === 'dept_gs';
+    const isOrtho2 = state.currentDept === 'dept_ortho';
+    const isDerma2 = state.currentDept === 'dept_derma';
+    const entries2 = Object.entries(dept.schedule||{}).sort((a,b)=>{
+      const [da,ma]=a[0].split('/').map(Number),[db,mb]=b[0].split('/').map(Number);
+      return ma!==mb?ma-mb:da-db;
+    });
+    const todayKey2 = getTodayKey();
+    let cardsHtml = '<div class="schedule-cards">';
+    if (entries2.length===0) {
+      cardsHtml += '<div class="empty-state"><h3>لا يوجد جدول</h3></div>';
+    } else {
+      cardsHtml += entries2.map(([key,e])=>{
+        const isT = key===todayKey2;
+        let rows = isGS2
+          ? `<div class="sched-card-row"><span class="sched-card-label">CONS</span><span class="sched-card-val">${e.consultant||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">SP</span><span class="sched-card-val">${e.sp||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">Sr</span><span class="sched-card-val">${e.sr||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">Jr</span><span class="sched-card-val">${e.jr||'—'}</span></div>
+             ${e.plastic?`<div class="sched-card-row"><span class="sched-card-label">💉</span><span class="sched-card-val" style="color:#ec4899">${e.plastic}</span></div>`:''}`
+          : isOrtho2
+          ? `<div class="sched-card-row"><span class="sched-card-label">☀️ ER1</span><span class="sched-card-val">${e.er1||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">🌆 ER2</span><span class="sched-card-val">${e.er2||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">🌙 ER3</span><span class="sched-card-val">${e.er3||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">⭐ أخصائي</span><span class="sched-card-val">${e.specialist||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">👨‍⚕️ استشاري</span><span class="sched-card-val">${e.consultant||'—'}</span></div>`
+          : isDerma2
+          ? `<div class="sched-card-row"><span class="sched-card-label">مناوب أول</span><span class="sched-card-val">${e.r1||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">مناوب ثاني</span><span class="sched-card-val">${e.r2||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">مناوب ثالث</span><span class="sched-card-val">${e.r3||'—'}</span></div>
+             ${e.coord?`<div class="sched-card-row"><span class="sched-card-label">📋 تنسيق</span><span class="sched-card-val">${e.coord}</span></div>`:''}`
+          : `<div class="sched-card-row"><span class="sched-card-label">مناوب أول</span><span class="sched-card-val">${e.r1||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">مناوب ثاني</span><span class="sched-card-val">${e.r2||'—'}</span></div>
+             <div class="sched-card-row"><span class="sched-card-label">استشاري</span><span class="sched-card-val">${e.consultant||'—'}</span></div>`;
+        return `<div class="sched-card" style="${isT?'border-color:var(--accent);':''}">
+          <div class="sched-card-date">📅 ${key} ${isT?'<span class="badge badge-green">اليوم</span>':''}<button class="btn-icon" style="margin-right:auto;font-size:14px;" onclick="deleteScheduleEntry('${key}')">🗑</button></div>
+          ${rows}</div>`;
+      }).join('');
+    }
+    cardsHtml += '</div>';
+    container.innerHTML = html + cardsHtml;
   }
 
   if (tab === 'upload') {
@@ -1822,40 +2180,46 @@ function toast(msg, type='info') {
 }
 
 // ========== INIT ==========
-load();
+// (initialization happens at bottom of script after all constants are defined)
 
 
 // ===== IM MULTI-SHIFT SCHEDULE =====
 const IM_SCHED = {
-  "15/2":{"erDay":["Y.Nayef","Hadi"],"erEvening":["Y.Nayef","Abdulrahman T."],"erNight":["Rayed","Bedaiwi","Abdulraouf"],"mspDay":"Saud","mspNight":"Shafiq","consultant":"OMALKHAIRE"},
-  "16/2":{"erDay":["Y.Nayef","Hadi"],"erEvening":["Lafi","Hamdah"],"erNight":["Enas","Bedaiwi","Abdulraouf"],"mspDay":"Bander","mspNight":"Ayat","consultant":"FAISAL"},
-  "17/2":{"erDay":["Y.Nayef","Hadi"],"erEvening":["Oqab","Abrar"],"erNight":["Majed","Abdulraouf","Bedaiwi"],"mspDay":"Hussain","mspNight":"Muaaz","consultant":"ZAHRA"},
-  "18/2":{"erDay":["Shujaa","Othman"],"erEvening":["Alsahwan","Abdulrahman T."],"erNight":["Mohannad","Bedaiwi","Abdulraouf"],"mspDay":"Atheer","mspNight":"Aseel","consultant":"BADRIYA"},
-  "19/2":{"erDay":["Shujaa","Othman"],"erEvening":["Danah","S.Alomary"],"erNight":["Hadeel","Bedaiwi","Abdulraouf"],"mspDay":"Anmar","mspNight":"Alsanie","consultant":"FAISAL"},
-  "20/2":{"erDay":["Hadi","Enas"],"erEvening":[],"erNight":["Y.Nayef","Abdulraouf","Bedaiwi"],"mspDay":"Shafiq","mspNight":"Bander","consultant":"NEZAR"},
-  "21/2":{"erDay":["Othman","A.Alharbi"],"erEvening":[],"erNight":["Lafi","Bedaiwi","Abdulraouf"],"mspDay":"Hussain","mspNight":"Saud","consultant":"ZAHRA"},
-  "22/2":{"erDay":["Shujaa","Othman"],"erEvening":["Alsahwan","Oqab"],"erNight":["Rayed","Rayyan","Alqurashi"],"mspDay":"Alsanie","mspNight":"Muaaz","consultant":"AFIFI"},
-  "23/2":{"erDay":["A.Alharbi","Lafi"],"erEvening":["Shujaa","Majed"],"erNight":["Alluhaidan","Hajri","Rayyan"],"mspDay":"Aseel","mspNight":"Ayat","consultant":"BADRIYA"},
-  "24/2":{"erDay":["A.Alharbi","Lafi"],"erEvening":["Abdulrahman T.","Y.Nayef"],"erNight":["Abrar","Alqurashi","Hajri"],"mspDay":"Anmar","mspNight":"Hussain","consultant":"FAISAL"},
-  "25/2":{"erDay":["A.Alharbi","Majed"],"erEvening":["Hamdah","Mohannad"],"erNight":["Othman","Rayyan","Alqurashi"],"mspDay":"Alsanie","mspNight":"Atheer","consultant":"HAZIM"},
-  "26/2":{"erDay":["Alluhaidan","Majed"],"erEvening":["Enas","Lafi"],"erNight":["A.Alharbi","Hajri","Rayyan"],"mspDay":"Bander","mspNight":"Anmar","consultant":"BADRIYA"},
-  "27/2":{"erDay":["Hadeel"],"erEvening":[],"erNight":["Moath Y.","Alqurashi","Hajri"],"mspDay":"Ayat","mspNight":"Atheer","consultant":"ZAHRA"},
-  "28/2":{"erDay":["S.Alomary"],"erEvening":[],"erNight":["Hadi","Rayyan","Alqurashi"],"mspDay":"Muaaz","mspNight":"Aseel","consultant":"HAZIM"},
-  "1/3":{"erDay":["S.Alomary","Majed"],"erEvening":["Shujaa","Othman"],"erNight":["Hamdah","Bedaiwi","Abdulraouf"],"mspDay":"Ayat","mspNight":"Bander","consultant":"M.ALYOUSEF"},
-  "2/3":{"erDay":["S.Alomary","Abdulrahman T."],"erEvening":["Rayed","Alsahwan"],"erNight":["Majed","Abdulraouf","Bedaiwi"],"mspDay":"Alsanie","mspNight":"Atheer","consultant":"FAISAL"},
-  "3/3":{"erDay":["Alluhaidan","Rayed"],"erEvening":["Abdulrahman T.","S.Alomary"],"erNight":["Suha","Bedaiwi","Abdulraouf"],"mspDay":"Muaaz","mspNight":"Aseel","consultant":"AFIFI"},
-  "4/3":{"erDay":["Hamdah","Abdulrahman T."],"erEvening":["Shujaa","Oqab"],"erNight":["Othman","Bedaiwi","Abdulraouf"],"mspDay":"Hussain","mspNight":"Bander","consultant":"NEZAR"},
-  "5/3":{"erDay":["Hamdah","Abdulrahman T."],"erEvening":["Alluhaidan","Hadi"],"erNight":["Moath Y.","Abdulraouf","Bedaiwi"],"mspDay":"Atheer","mspNight":"Alsanie","consultant":"HAZIM"},
-  "6/3":{"erDay":["Mohannad","Danah"],"erEvening":[],"erNight":["Alsahwan","Bedaiwi","Abdulraouf"],"mspDay":"Anmar","mspNight":"Aseel","consultant":"M.ALYOUSEF"},
-  "7/3":{"erDay":["A.Alharbi"],"erEvening":[],"erNight":["Hadeel","Bedaiwi","Abdulraouf"],"mspDay":"Atheer","mspNight":"Ayat","consultant":"AFIFI"},
-  "8/3":{"erDay":["S.Alomary","Rayed"],"erEvening":["Majed","Shujaa"],"erNight":["Y.Nayef","Hajri","Rayyan"],"mspDay":"Muaaz","mspNight":"Hussain","consultant":"M.ALYOUSEF"},
-  "9/3":{"erDay":["Hamdah","Rayed"],"erEvening":["Oqab","Alsahwan"],"erNight":["Hadi","Alqurashi","Hajri"],"mspDay":"Ayat","mspNight":"Atheer","consultant":"HAZIM"},
-  "10/3":{"erDay":["Alsahwan","Oqab"],"erEvening":["Othman","Rayed"],"erNight":["A.Alharbi","Rayyan","Alqurashi"],"mspDay":"Anmar","mspNight":"Bander","consultant":"NEZAR"},
-  "11/3":{"erDay":["Alsahwan","Oqab"],"erEvening":["Y.Nayef","Hamdah"],"erNight":["Suha","Hajri","Rayyan"],"mspDay":"Aseel","mspNight":"Alsanie","consultant":"M.ALYOUSEF"},
-  "12/3":{"erDay":["Alsahwan","Oqab"],"erEvening":["Mohannad","Moath Y."],"erNight":["Danah","Alqurashi","Hajri"],"mspDay":"Ayat","mspNight":"Anmar","consultant":"AFIFI"},
-  "13/3":{"erDay":["Alluhaidan"],"erEvening":[],"erNight":["S.Alomary","Rayyan","Alqurashi"],"mspDay":"Hussain","mspNight":"Bander","consultant":"ZAHRA"},
-  "14/3":{"erDay":["Majed"],"erEvening":[],"erNight":["Rayed","Hajri","Rayyan"],"mspDay":"Alsanie","mspNight":"Muaaz","consultant":"NEZAR"},
+  // Block 06: Feb 15 - Mar 14, 2026
+  // Ramadan shifts: erDay=10AM-4PM | erEvening=4PM-12AM | erNight=12AM-10AM
+  // MSP: mspDay=8AM-8PM | mspNight=8PM-8AM | consultant=8AM-8AM
+  // Pre-Ramadan (Feb 15-17): erDay=8AM-3:30PM | erEvening=3:30PM-10PM | erNight=10PM-8AM
+  "15/2":{erDay:["Y.Nayef","Hadi"],          erEvening:["Y.Nayef","Abdulrahman"],  erNight:["Rayed","Bedaiwi","Abdulraouf","Nada"],   mspDay:"Saud",    mspNight:"Shafiq",  consultant:"OMALKHAIRE"},
+  "16/2":{erDay:["Y.Nayef","Hadi"],          erEvening:["Lafi","Hamdah","Enas","Nada"],    erNight:["Bedaiwi","Abdulraouf"],          mspDay:"Bander",  mspNight:"Ayat",    consultant:"FAISAL"},
+  "17/2":{erDay:["Y.Nayef","Hadi"],          erEvening:["Oqab","Abrar","Majed"],   erNight:["Abdulraouf","Nada","Bedaiwi"],           mspDay:"Hussain", mspNight:"Muaaz",   consultant:"ZAHRA"},
+  // Ramadan starts 18 Feb
+  "18/2":{erDay:["Shujaa","Othman"],         erEvening:["Alsahwan","Abdulrahman","Mohannad"], erNight:["Bedaiwi","Abdulraouf","Nada"], mspDay:"Atheer",  mspNight:"Aseel",   consultant:"BADRIYA"},
+  "19/2":{erDay:["Shujaa","Othman"],         erEvening:["Danah","S.Alomary","Hadeel"],        erNight:["Nada","Bedaiwi","Abdulraouf"],mspDay:"Anmar",   mspNight:"Alsanie", consultant:"FAISAL"},
+  "20/2":{erDay:["Hadi"],                    erEvening:["Enas"],              erNight:["Y.Nayef","Abdulraouf","Nada","Bedaiwi"],      mspDay:"Shafiq",  mspNight:"Bander",  consultant:"NEZAR"},
+  "21/2":{erDay:["Othman"],                  erEvening:["A.Alharbi"],         erNight:["Lafi","Bedaiwi","Abdulraouf","Nada"],         mspDay:"Hussain", mspNight:"Saud",    consultant:"ZAHRA"},
+  "22/2":{erDay:["Shujaa","Othman"],         erEvening:["Alsahwan","Oqab","Rayed"],  erNight:["Rayyan","Alqurashi","Hajri"],          mspDay:"Alsanie", mspNight:"Muaaz",   consultant:"AFIFI"},
+  "23/2":{erDay:["A.Alharbi","Lafi"],        erEvening:["Shujaa","Majed","Alluhaidan"], erNight:["Hajri","Rayyan","Alqurashi"],       mspDay:"Aseel",   mspNight:"Ayat",    consultant:"BADRIYA"},
+  "24/2":{erDay:["A.Alharbi","Lafi"],        erEvening:["Abdulrahman","Y.Nayef","Abrar"], erNight:["Alqurashi","Hajri","Rayyan"],     mspDay:"Anmar",   mspNight:"Hussain", consultant:"FAISAL"},
+  "25/2":{erDay:["A.Alharbi","Majed"],       erEvening:["Hamdah","Mohannad","Othman"],  erNight:["Rayyan","Alqurashi","Hajri"],       mspDay:"Alsanie", mspNight:"Atheer",  consultant:"HAZIM"},
+  "26/2":{erDay:["Alluhaidan","Majed"],      erEvening:["Enas","Lafi","A.Alharbi"],     erNight:["Hajri","Rayyan","Alqurashi"],       mspDay:"Bander",  mspNight:"Anmar",   consultant:"BADRIYA"},
+  "27/2":{erDay:["Hadeel"],                  erEvening:["Moath Y."],          erNight:["Oqab","Alqurashi","Hajri","Rayyan"],          mspDay:"Ayat",    mspNight:"Atheer",  consultant:"ZAHRA"},
+  "28/2":{erDay:["S.Alomary"],               erEvening:["Hadi"],              erNight:["Abdulrahman","Rayyan","Alqurashi","Hajri"],    mspDay:"Muaaz",   mspNight:"Aseel",   consultant:"HAZIM"},
+  "1/3": {erDay:["S.Alomary","Majed"],       erEvening:["Shujaa","Othman","Hamdah"],    erNight:["Nada","Bedaiwi","Abdulraouf"],      mspDay:"Ayat",    mspNight:"Bander",  consultant:"M.ALYOUSEF"},
+  "2/3": {erDay:["S.Alomary","Abdulrahman"], erEvening:["Rayed","Alsahwan","Majed"],    erNight:["Abdulraouf","Nada","Bedaiwi"],      mspDay:"Alsanie", mspNight:"Atheer",  consultant:"FAISAL"},
+  "3/3": {erDay:["Alluhaidan","Rayed"],      erEvening:["Abdulrahman","S.Alomary","Suha"], erNight:["Bedaiwi","Abdulraouf","Nada"],   mspDay:"Muaaz",   mspNight:"Aseel",   consultant:"AFIFI"},
+  "4/3": {erDay:["Hamdah","Abdulrahman"],    erEvening:["Shujaa","Oqab","Othman"],      erNight:["Nada","Bedaiwi","Abdulraouf"],      mspDay:"Hussain", mspNight:"Bander",  consultant:"NEZAR"},
+  "5/3": {erDay:["Hamdah","Abdulrahman"],    erEvening:["Alluhaidan","Hadi","Moath Y."],erNight:["Abdulraouf","Nada","Bedaiwi"],      mspDay:"Atheer",  mspNight:"Alsanie", consultant:"HAZIM"},
+  "6/3": {erDay:["Mohannad"],                erEvening:["Danah"],             erNight:["Alsahwan","Bedaiwi","Abdulraouf","Nada"],      mspDay:"Anmar",   mspNight:"Aseel",   consultant:"M.ALYOUSEF"},
+  "7/3": {erDay:["A.Alharbi"],               erEvening:["Hadeel"],            erNight:["Hamdah","Nada","Bedaiwi","Abdulraouf"],        mspDay:"Atheer",  mspNight:"Ayat",    consultant:"AFIFI"},
+  "8/3": {erDay:["S.Alomary","Rayed"],       erEvening:["Majed","Shujaa","Y.Nayef"],    erNight:["Hajri","Rayyan","Alqurashi"],       mspDay:"Muaaz",   mspNight:"Hussain", consultant:"M.ALYOUSEF"},
+  "9/3": {erDay:["Hamdah","Rayed"],          erEvening:["Oqab","Alsahwan","Hadi"],      erNight:["Alqurashi","Hajri","Rayyan"],       mspDay:"Ayat",    mspNight:"Atheer",  consultant:"HAZIM"},
+  "10/3":{erDay:["Alsahwan","Oqab"],         erEvening:["Othman","Rayed","A.Alharbi"],  erNight:["Rayyan","Alqurashi","Hajri"],       mspDay:"Anmar",   mspNight:"Bander",  consultant:"NEZAR"},
+  "11/3":{erDay:["Alsahwan","Oqab"],         erEvening:["Y.Nayef","Hamdah","Suha"],     erNight:["Hajri","Rayyan","Alqurashi"],       mspDay:"Aseel",   mspNight:"Alsanie", consultant:"M.ALYOUSEF"},
+  "12/3":{erDay:["Alsahwan","Oqab"],         erEvening:["Mohannad","Moath Y.","Danah"], erNight:["Alqurashi","Hajri","Rayyan"],       mspDay:"Ayat",    mspNight:"Anmar",   consultant:"AFIFI"},
+  "13/3":{erDay:["Alluhaidan"],              erEvening:["S.Alomary"],         erNight:["Shujaa","Rayyan","Alqurashi","Hajri"],         mspDay:"Hussain", mspNight:"Bander",  consultant:"ZAHRA"},
+  "14/3":{erDay:["Majed"],                   erEvening:["Rayed"],             erNight:["Talal","Hajri","Rayyan","Alqurashi"],           mspDay:"Alsanie", mspNight:"Muaaz",   consultant:"NEZAR"},
 };
+
 
 function getSAHour() {
   return new Date(new Date().getTime() + 3*3600*1000).getUTCHours();
@@ -1877,37 +2241,37 @@ const SHIFT_CONFIG = {
 // شفت 7:30AM - 7:30AM | consultant + specialist + 2 residents
 // plastic: اسم طبيب التجميل المناوب إذا موجود
 const GS_MARCH_SCHED = {
-  "1/3":{"consultant":"AlBahooth","r1":"Aldarwish","r2":"Amirah","r3":"Noura","plastic":"Moraya"},
-  "2/3":{"consultant":"AlMasoud","r1":"Ahmed","r2":"Ghadah","r3":"Botol","plastic":"Moraya"},
-  "3/3":{"consultant":"Ghadeer","r1":"Nawaf","r2":"Nada","r3":"Nouf","plastic":"Moraya"},
-  "4/3":{"consultant":"Fahad","r1":"Aldarwish","r2":"Raghad","r3":"Zinab","plastic":""},
-  "5/3":{"consultant":"AlAngri","r1":"Feras","r2":"Abdulwahab","r3":"Noura","plastic":""},
-  "6/3":{"consultant":"Shanawani","r1":"Aldarwish","r2":"Amirah","r3":"Ghaida","plastic":""},
-  "7/3":{"consultant":"Shanawani","r1":"Feras","r2":"Ghadah","r3":"Botol","plastic":""},
-  "8/3":{"consultant":"Esraa","r1":"Sorror","r2":"Nada","r3":"Dina","plastic":""},
-  "9/3":{"consultant":"Fahad","r1":"Nawaf","r2":"Amirah","r3":"Malik","plastic":""},
-  "10/3":{"consultant":"Ghadeer","r1":"Ahmed","r2":"Abdulwahab","r3":"Zinab","plastic":""},
-  "11/3":{"consultant":"AlAngri","r1":"Aldarwish","r2":"Ghadah","r3":"Ghaida","plastic":""},
-  "12/3":{"consultant":"AlBahooth","r1":"Amani","r2":"Amirah","r3":"Botol","plastic":""},
-  "13/3":{"consultant":"Esraa","r1":"Lyla","r2":"Nada","r3":"Dina","plastic":""},
-  "14/3":{"consultant":"Fahad","r1":"Sorror","r2":"Raghad","r3":"Ibtisam","plastic":""},
-  "15/3":{"consultant":"AlMasoud","r1":"Abduljabar","r2":"Abdulwahab","r3":"Roba","plastic":"Moraya"},
-  "16/3":{"consultant":"AlBahooth","r1":"Hassan","r2":"Raghad","r3":"Faris","plastic":"Moraya"},
-  "17/3":{"consultant":"Esraa","r1":"Lyla","r2":"Abdulelah","r3":"Ibtisam","plastic":"Moraya"},
-  "18/3":{"consultant":"Fahad","r1":"Abduljabar","r2":"Nada","r3":"Roba","plastic":"Moraya"},
-  "19/3":{"consultant":"AlMasoud","r1":"Sorror","r2":"Raghad","r3":"Nouf","plastic":""},
-  "20/3":{"consultant":"AlBahooth","r1":"Hassan","r2":"Abdulelah","r3":"Faris","plastic":""},
-  "21/3":{"consultant":"Esraa","r1":"Amani","r2":"Nada","r3":"Roba","plastic":""},
-  "22/3":{"consultant":"Fahad","r1":"Lyla","r2":"Abdulwahab","r3":"Dina","plastic":""},
-  "23/3":{"consultant":"AlMasoud","r1":"Abduljabar","r2":"Raghad","r3":"Nouf","plastic":""},
-  "24/3":{"consultant":"AlBahooth","r1":"Hassan","r2":"Abdulelah","r3":"Faris","plastic":""},
-  "25/3":{"consultant":"Saud","r1":"Feras","r2":"Nada","r3":"Zinab","plastic":""},
-  "26/3":{"consultant":"Ghadeer","r1":"Soror","r2":"Abdulelah","r3":"Noura","plastic":""},
-  "27/3":{"consultant":"AlAngri","r1":"Nawaf","r2":"Amirah","r3":"Malik","plastic":""},
-  "28/3":{"consultant":"AlAngri","r1":"Ahmed","r2":"Ghadah","r3":"Zinab","plastic":""},
-  "29/3":{"consultant":"Yasser","r1":"Feras","r2":"Abdulelah","r3":"Ghaida","plastic":""},
-  "30/3":{"consultant":"Saud","r1":"Nawaf","r2":"Abdulwahab","r3":"Ibtisam","plastic":""},
-  "31/3":{"consultant":"AlTassan","r1":"Ahmed","r2":"Ghadah","r3":"Malik","plastic":""},
+  "1/3": {"consultant":"AlBahooth","sp":"Aldarwish","sr":"Amirah","jr":"Noura","plastic":"Moraya"},
+  "2/3": {"consultant":"AlMasoud","sp":"Ahmed","sr":"Ghadah","jr":"Botol","plastic":"Moraya"},
+  "3/3": {"consultant":"Ghadeer","sp":"Nawaf","sr":"Nada","jr":"Nouf","plastic":"Moraya"},
+  "4/3": {"consultant":"Fahad","sp":"Aldarwish","sr":"Raghad","jr":"Zinab","plastic":"Moraya"},
+  "5/3": {"consultant":"AlAngri","sp":"Feras","sr":"Abdulwahab","jr":"Noura","plastic":"Moraya"},
+  "6/3": {"consultant":"Shanawani","sp":"Aldarwish","sr":"Amirah","jr":"Ghaida","plastic":"Moraya"},
+  "7/3": {"consultant":"Shanawani","sp":"Feras","sr":"Ghadah","jr":"Botol","plastic":"Moraya"},
+  "8/3": {"consultant":"Esraa","sp":"Sorror","sr":"Nada","jr":"Dina","plastic":""},
+  "9/3": {"consultant":"Fahad","sp":"Nawaf","sr":"Amirah","jr":"Malik","plastic":""},
+  "10/3":{"consultant":"Ghadeer","sp":"Ahmed","sr":"Abdulwahab","jr":"Zinab","plastic":""},
+  "11/3":{"consultant":"AlAngri","sp":"Aldarwish","sr":"Ghadah","jr":"Ghaida","plastic":""},
+  "12/3":{"consultant":"AlBahooth","sp":"Amani","sr":"Amirah","jr":"Botol","plastic":""},
+  "13/3":{"consultant":"Esraa","sp":"Lyla","sr":"Nada","jr":"Dina","plastic":""},
+  "14/3":{"consultant":"Fahad","sp":"Sorror","sr":"Raghad","jr":"Ibtisam","plastic":""},
+  "15/3":{"consultant":"AlMasoud","sp":"Abduljabar","sr":"Abdulwahab","jr":"Roba","plastic":""},
+  "16/3":{"consultant":"AlBahooth","sp":"Hassan","sr":"Raghad","jr":"Faris","plastic":""},
+  "17/3":{"consultant":"Esraa","sp":"Lyla","sr":"Abdulelah","jr":"Ibtisam","plastic":""},
+  "18/3":{"consultant":"Fahad","sp":"Abduljabar","sr":"Nada","jr":"Roba","plastic":""},
+  "19/3":{"consultant":"AlMasoud","sp":"Sorror","sr":"Raghad","jr":"Nouf","plastic":""},
+  "20/3":{"consultant":"AlBahooth","sp":"Hassan","sr":"Abdulelah","jr":"Faris","plastic":""},
+  "21/3":{"consultant":"Esraa","sp":"Amani","sr":"Nada","jr":"Roba","plastic":""},
+  "22/3":{"consultant":"Fahad","sp":"Lyla","sr":"Abdulwahab","jr":"Dina","plastic":""},
+  "23/3":{"consultant":"AlMasoud","sp":"Abduljabar","sr":"Raghad","jr":"Nouf","plastic":""},
+  "24/3":{"consultant":"AlBahooth","sp":"Hassan","sr":"Abdulelah","jr":"Faris","plastic":""},
+  "25/3":{"consultant":"Saud","sp":"Feras","sr":"Nada","jr":"Zinab","plastic":""},
+  "26/3":{"consultant":"Ghadeer","sp":"Soror","sr":"Abdulelah","jr":"Noura","plastic":""},
+  "27/3":{"consultant":"AlAngri","sp":"Nawaf","sr":"Amirah","jr":"Malik","plastic":""},
+  "28/3":{"consultant":"AlAngri","sp":"Ahmed/Manl","sr":"Ghadah","jr":"Zinab","plastic":""},
+  "29/3":{"consultant":"Yasser","sp":"Feras","sr":"Abdulelah","jr":"Ghaida","plastic":""},
+  "30/3":{"consultant":"Saud","sp":"Nawaf/Manal","sr":"Abdulwahab","jr":"Ibtisam","plastic":""},
+  "31/3":{"consultant":"AlTasan","sp":"Ahmed","sr":"Ghadah","jr":"Malik","plastic":""},
 };
 
 
@@ -2015,18 +2379,18 @@ const URO_SCHED = {
 
 const PSY_SCHED = {
   "1/3": {r1:"Layan",     r2:"Mona",    consultant:"Faisal"},
-  "2/3": {r1:"Fares",     r2:"Mona",    consultant:"Faisal"},
+  "2/3": {r1:"Sarah",     r2:"Mona",    consultant:"Faisal"},
   "3/3": {r1:"Abaad",     r2:"Mona",    consultant:"Faisal"},
   "4/3": {r1:"Sarah",     r2:"Basma",   consultant:"Faisal"},
   "5/3": {r1:"Abaad",     r2:"Basma",   consultant:"Iman"},
   "6/3": {r1:"Abdulelah", r2:"Basma",   consultant:"Iman"},
   "7/3": {r1:"Layan",     r2:"Basma",   consultant:"Iman"},
-  "8/3": {r1:"Fares",     r2:"Basma",   consultant:"Iman"},
-  "9/3": {r1:"Layan",     r2:"Basma",   consultant:"Iman"},
-  "10/3":{r1:"Fares",     r2:"Ahlam",   consultant:"Faisal"},
-  "11/3":{r1:"Abaad",     r2:"Ahlam",   consultant:"Faisal"},
-  "12/3":{r1:"Abdulelah", r2:"Ahlam",   consultant:"Faisal"},
-  "13/3":{r1:"Abaad",     r2:"Ahlam",   consultant:"Faisal"},
+  "8/3": {r1:"Abaad",     r2:"Basma",   consultant:"Iman"},
+  "9/3": {r1:"Fares",     r2:"Basma",   consultant:"Iman"},
+  "10/3":{r1:"Layan",     r2:"Ahlam",   consultant:"Faisal"},
+  "11/3":{r1:"Abdulelah", r2:"Ahlam",   consultant:"Faisal"},
+  "12/3":{r1:"Abaad",     r2:"Ahlam",   consultant:"Faisal"},
+  "13/3":{r1:"Fares",     r2:"Ahlam",   consultant:"Faisal"},
   "14/3":{r1:"Sarah",     r2:"Ahlam",   consultant:"Faisal"},
   "15/3":{r1:"Sarah",     r2:"Nimrah",  consultant:"Iman"},
   "16/3":{r1:"Abdulelah", r2:"Nimrah",  consultant:"Iman"},
@@ -2051,6 +2415,7 @@ const PSY_SCHED = {
 // ===== ORTHOPEDIC SCHEDULE - RAMADAN 1447 =====
 // ER1: 10AM-6PM | ER2: 6PM-2AM | ER3: 2AM-10AM | specialist: 2nd on call 24hr
 const ORTHO_SCHED = {
+  // رمضان 1447 (18 فبراير - 14 مارس) من الجدول المحدّث
   "18/2":{"er1":"ABDULRAHMAN/Ruwaily","er2":"Khalid","er3":"Eithan","specialist":"ABDULRAHMAN","consultant":"Aloteibi"},
   "19/2":{"er1":"AMIN/Azzam","er2":"Khalid","er3":"Ruwaily","specialist":"AMIN","consultant":"Aloteibi"},
   "20/2":{"er1":"Wail","er2":"Eithan","er3":"Omar","specialist":"HATTAB","consultant":"Aloteibi"},
@@ -2073,12 +2438,110 @@ const ORTHO_SCHED = {
   "9/3":{"er1":"WALEED/Tariq","er2":"Albaz","er3":"Khalid","specialist":"WALEED","consultant":"Tegani"},
   "10/3":{"er1":"SULAIMAN/Azzam","er2":"Omar","er3":"Albaz","specialist":"SULAIMAN","consultant":"Tegani"},
   "11/3":{"er1":"EMAN/Ruwaily","er2":"Omar","er3":"Khalid","specialist":"EMAN","consultant":"Tegani"},
-  "12/3":{"er1":"ALAA/Eithan","er2":"Wail","er3":"Azzam","specialist":"SULAIMAN","consultant":"Tegani"},
+  "12/3":{"er1":"WALEED/ABDULRAHMAN/Eithan","er2":"HATTAB/Wail/Tariq","er3":"EMAN/Ruwaily","specialist":"EMAN","consultant":"Tegani"},
   "13/3":{"er1":"Omar","er2":"Wail","er3":"Azzam","specialist":"SULAIMAN","consultant":"Tegani"},
   "14/3":{"er1":"Tariq","er2":"Eithan","er3":"Omar","specialist":"ALAA","consultant":"Tegani"},
 };
 
+// ===== DERMATOLOGY SCHEDULE - MARCH 2026 =====
+// 1st oncall = مناوب أول, 2nd oncall = مناوب ثاني, 3rd oncall = مناوب ثالث
+const DERMA_SCHED = {
+  "1/3": {r1:"د منشي",   r2:"د منشي",   r3:"د يزيد",   coord:"نضال / نورة"},
+  "2/3": {r1:"د منشي",   r2:"د منشي",   r3:"د يزيد",   coord:"لمى ص/شجون"},
+  "3/3": {r1:"د وائل",   r2:"د منشي",   r3:"د يزيد",   coord:"رغد"},
+  "4/3": {r1:"د يزيد",   r2:"د منشي",   r3:"د يزيد",   coord:"رغد"},
+  "5/3": {r1:"د الهويش", r2:"د منشي",   r3:"د يزيد",   coord:"سلطان"},
+  "6/3": {r1:"د الهويش", r2:"د منشي",   r3:"د يزيد",   coord:"سلطان"},
+  "7/3": {r1:"د الهويش", r2:"د منشي",   r3:"د يزيد",   coord:"سلطان"},
+  "8/3": {r1:"د يزيد",   r2:"د وائل",   r3:"د يزيد",   coord:"نضال / امال"},
+  "9/3": {r1:"د منشي",   r2:"د وائل",   r3:"د يزيد",   coord:"لمى ص/شجون"},
+  "10/3":{r1:"د وائل",   r2:"د وائل",   r3:"د يزيد",   coord:"نورة"},
+  "11/3":{r1:"د وائل",   r2:"د وائل",   r3:"د يزيد",   coord:"نورة"},
+  "12/3":{r1:"د وائل",   r2:"د وائل",   r3:"د يزيد",   coord:"نورة"},
+  "13/3":{r1:"د الهويش", r2:"د وائل",   r3:"د يزيد",   coord:"نورة"},
+  "14/3":{r1:"د الهويش", r2:"د وائل",   r3:"د يزيد",   coord:"نورة"},
+  "15/3":{r1:"د السحيم", r2:"",          r3:"",          coord:"غادة"},
+  "16/3":{r1:"د السحيم", r2:"",          r3:"",          coord:"غادة"},
+  "17/3":{r1:"د السحيم", r2:"",          r3:"",          coord:"غادة"},
+  "18/3":{r1:"د يزيد",   r2:"",          r3:"",          coord:"غادة"},
+  "19/3":{r1:"د يزيد",   r2:"",          r3:"",          coord:"دالل"},
+  "20/3":{r1:"د يزيد",   r2:"",          r3:"",          coord:"دالل"},
+  "21/3":{r1:"د السحيم", r2:"",          r3:"",          coord:"دالل"},
+  "22/3":{r1:"د السحيم", r2:"",          r3:"",          coord:"دالل"},
+  "23/3":{r1:"د وائل",   r2:"",          r3:"",          coord:"دالل"},
+  "24/3":{r1:"د وائل",   r2:"",          r3:"",          coord:"دالل"},
+  "25/3":{r1:"د وائل",   r2:"",          r3:"",          coord:"دالل"},
+  "26/3":{r1:"د وائل",   r2:"",          r3:"",          coord:"دالل"},
+  "27/3":{r1:"د وائل",   r2:"",          r3:"",          coord:"دالل"},
+  "28/3":{r1:"د الهويش", r2:"د الهويش", r3:"د السحيم",  coord:"نورة"},
+  "29/3":{r1:"د منشي",   r2:"د الهويش", r3:"د السحيم",  coord:"نضال / نورة"},
+  "30/3":{r1:"د يزيد",   r2:"د منشي",   r3:"د صالحة",   coord:"رغد"},
+  "31/3":{r1:"د وائل",   r2:"د منشي",   r3:"د صالحة",   coord:"سلطان"},
+};
+
 const PRELOADED_DEPTS = {
+  dept_im: {
+    id:'dept_im', nameAr:'الباطنة', nameEn:'Internal Medicine', icon:'🫀',
+    consultants:[
+      {id:'im_c1', name:'M.ALYOUSEF',  phone:'0507099090'},
+      {id:'im_c2', name:'FAISAL',      phone:'0555492041'},
+      {id:'im_c3', name:'ZAHRA',       phone:'0534633220'},
+      {id:'im_c4', name:'AFIFI',       phone:'0531059331'},
+      {id:'im_c5', name:'NEZAR',       phone:'0502745102'},
+      {id:'im_c6', name:'HAZIM',       phone:'0540664060'},
+      {id:'im_c7', name:'BADRIYA',     phone:'0505281699'},
+      {id:'im_c8', name:'OMALKHAIRE',  phone:'0555629006'},
+      {id:'im_c9', name:'M.ALANAZI',   phone:'0555531428'},
+    ],
+    specialists:[
+      {id:'im_s1', name:'SHAFIQ',   phone:'0509773287'},
+      {id:'im_s2', name:'ALSANIE',  phone:'0558105515'},
+      {id:'im_s3', name:'HUSSAIN',  phone:'0570618739'},
+      {id:'im_s4', name:'MOTAZ',    phone:'0501266214'},
+      {id:'im_s5', name:'BANDER',   phone:'0504898563'},
+      {id:'im_s6', name:'AYAT',     phone:'0555849458'},
+      {id:'im_s7', name:'SAUD',     phone:'0564480323'},
+      {id:'im_s8', name:'ANMAR',    phone:'0503546643'},
+      {id:'im_s9', name:'MUAAZ',    phone:'0555748611'},
+      {id:'im_s10',name:'ATHEER',   phone:'0598100291'},
+      {id:'im_s11',name:'ASEEL',    phone:'0543841232'},
+    ],
+    residents:[
+      {id:'im_r1', name:'Y.Nayef',      phone:'0560942607'},
+      {id:'im_r2', name:'Hadi',         phone:'0541106205'},
+      {id:'im_r3', name:'Shujaa',       phone:'0553342821'},
+      {id:'im_r4', name:'Othman',       phone:'0540402437'},
+      {id:'im_r5', name:'S.Alomary',    phone:'0557972109'},
+      {id:'im_r6', name:'Rayed',        phone:'0554133372'},
+      {id:'im_r7', name:'Majed',        phone:'0551126972'},
+      {id:'im_r8', name:'Hamdah',       phone:'0531059331'},
+      {id:'im_r9', name:'Abdulrahman',  phone:'0540402437'},
+      {id:'im_r10',name:'Alsahwan',     phone:'0531263367'},
+      {id:'im_r11',name:'Mohannad',     phone:'0501832164'},
+      {id:'im_r12',name:'Danah',        phone:'0501998182'},
+      {id:'im_r13',name:'A.Alharbi',    phone:'0508557350'},
+      {id:'im_r14',name:'Lafi',         phone:'0536396096'},
+      {id:'im_r15',name:'Oqab',         phone:'0554236762'},
+      {id:'im_r16',name:'Alluhaidan',   phone:'0555258077'},
+      {id:'im_r17',name:'Enas',         phone:'0590569295'},
+      {id:'im_r18',name:'Hadeel',       phone:'0573700488'},
+      {id:'im_r19',name:'Moath Y.',     phone:'0554133372'},
+      {id:'im_r20',name:'Suha',         phone:'0534126723'},
+      {id:'im_r21',name:'Bedaiwi',      phone:'0553745644'},
+      {id:'im_r22',name:'Abdulraouf',   phone:'0595725761'},
+      {id:'im_r23',name:'Rayyan',       phone:'0533300498'},
+      {id:'im_r24',name:'Hajri',        phone:'0534633220'},
+      {id:'im_r25',name:'Alqurashi',    phone:'0546533706'},
+      {id:'im_r26',name:'Nada',         phone:'0553745644'},
+      {id:'im_r27',name:'Abrar',        phone:'0555422130'},
+      {id:'im_r28',name:'Talal',        phone:'0566664079'},
+      {id:'im_r29',name:'Abear',        phone:'0533995107'},
+      {id:'im_r30',name:'Alsayeg',      phone:'0550724403'},
+      {id:'im_r31',name:'Matrood',      phone:'0573711439'},
+      {id:'im_r32',name:'A.Alharbi',    phone:'0508557350'},
+    ],
+    schedule: IM_SCHED,
+  },
   dept_optha: {
     id:'dept_optha', nameAr:'طب العيون', nameEn:'Ophthalmology', icon:'👁️',
     consultants:[
@@ -2101,65 +2564,72 @@ const PRELOADED_DEPTS = {
       {id:'p13',name:'Dr. Osman',phone:'0502759303',role:'resident'},
       {id:'p14',name:'DR. Lamia',phone:'0555656548',role:'resident'},
       {id:'p15',name:'ASMA',phone:'0540815222',role:'resident'},
+      {id:'p16',name:'TAHIR',phone:'',role:'resident'},
+      {id:'p17',name:'AMRO',phone:'',role:'resident'},
     ],
     schedule:{
-      "1/2":{r1:"ASMA",r2:"AHMED",consultant:"SHAMMARI"},
-      "2/2":{r1:"NAIF",r2:"MOTAZ",consultant:"SHAMMARI"},
-      "3/2":{r1:"ASHJAN",r2:"AHMED",consultant:"SHAMMARI"},
-      "4/2":{r1:"OSMAN",r2:"TAHIR",consultant:"SHAMMARI"},
-      "5/2":{r1:"NASSER",r2:"AMRO",consultant:"HASSAN"},
-      "6/2":{r1:"LAMIA",r2:"TAHIR",consultant:"HASSAN"},
-      "7/2":{r1:"NAIF",r2:"AHMED",consultant:"HASSAN"},
-      "8/2":{r1:"ASMA",r2:"TAHIR",consultant:"HASSAN"},
-      "9/2":{r1:"NAIF",r2:"AHMED",consultant:"HASSAN"},
-      "10/2":{r1:"NASSER",r2:"TAHIR",consultant:"OMRAN"},
-      "11/2":{r1:"LAMIA",r2:"",consultant:"OMRAN"},
-      "12/2":{r1:"OSMAN",r2:"AHMED",consultant:"OMRAN"},
-      "13/2":{r1:"ASHJAN",r2:"",consultant:"OMRAN"},
-      "14/2":{r1:"NASSER",r2:"AHMED",consultant:"OMRAN"},
-      "15/2":{r1:"ASMA",r2:"",consultant:"ALJASSER"},
-      "16/2":{r1:"NAIF",r2:"AHMED",consultant:"ALJASSER"},
-      "17/2":{r1:"ASHJAN",r2:"TAHIR",consultant:"ALJASSER"},
-      "18/2":{r1:"LAMIA",r2:"AHMED",consultant:"ALJASSER"},
-      "19/2":{r1:"NASSER",r2:"TAHIR",consultant:"ALJASSER"},
-      "20/2":{r1:"OSMAN",r2:"",consultant:"NAWAF"},
-      "21/2":{r1:"ASMA",r2:"",consultant:"NAWAF"},
-      "22/2":{r1:"LAMIA",r2:"",consultant:"NAWAF"},
-      "23/2":{r1:"ASHJAN",r2:"TAHIR",consultant:"NAWAF"},
-      "24/2":{r1:"OSMAN",r2:"TAHIR",consultant:"NAWAF"},
-      "25/2":{r1:"NAIF",r2:"",consultant:"NAWAF"},
-      "26/2":{r1:"LAMIA",r2:"TAHIR",consultant:"NAWAF"},
-      "27/2":{r1:"ASMA",r2:"",consultant:"NAWAF"},
-      "28/2":{r1:"NASSER",r2:"TAHIR",consultant:"ENAZI"},
+      // March 2026 - from PDF schedule
+      // 1st on-call: 4PM-8AM | 2nd on-call: 8AM-8AM | consultant: 24hr
+      "1/3": {r1:"NAIF",   r2:"AHMED",  consultant:"ALENAZI"},
+      "2/3": {r1:"LAMIA",  r2:"TAHIR",  consultant:"ALENAZI"},
+      "3/3": {r1:"ASHJAN", r2:"AHMED",  consultant:"HASSAN"},
+      "4/3": {r1:"LAMIA",  r2:"TAHIR",  consultant:"HASSAN"},
+      "5/3": {r1:"ASMA",   r2:"AMRO",   consultant:"HASSAN"},
+      "6/3": {r1:"NASSER", r2:"TAHIR",  consultant:"OMRAN"},
+      "7/3": {r1:"NAIF",   r2:"AHMED",  consultant:"OMRAN"},
+      "8/3": {r1:"ASHJAN", r2:"",       consultant:"OMRAN"},
+      "9/3": {r1:"NASSER", r2:"AHMED",  consultant:"ALJASSER"},
+      "10/3":{r1:"ASMA",   r2:"TAHIR",  consultant:"ALJASSER"},
+      "11/3":{r1:"LAMIA",  r2:"",       consultant:"ALJASSER"},
+      "12/3":{r1:"NASSER", r2:"AHMED",  consultant:"ALJASSER"},
+      "13/3":{r1:"OSMAN",  r2:"TAHIR",  consultant:"HASSAN"},
+      "14/3":{r1:"ASMA",   r2:"AHMED",  consultant:"HASSAN"},
+      "15/3":{r1:"NAIF",   r2:"TAHIR",  consultant:"HASSAN"},
+      "16/3":{r1:"OSMAN",  r2:"AHMED",  consultant:"ALENAZI"},
+      "17/3":{r1:"ASMA",   r2:"TAHIR",  consultant:"ALENAZI"},
+      "18/3":{r1:"NAIF",   r2:"AHMED",  consultant:"ALENAZI"},
+      "19/3":{r1:"OSMAN",  r2:"TAHIR",  consultant:"OMRAN"},
+      "20/3":{r1:"ASMA",   r2:"AHMED",  consultant:"OMRAN"},
+      "21/3":{r1:"NAIF",   r2:"TAHIR",  consultant:"OMRAN"},
+      "22/3":{r1:"OSMAN",  r2:"AHMED",  consultant:"NAWAF"},
+      "23/3":{r1:"ASMA",   r2:"TAHIR",  consultant:"NAWAF"},
+      "24/3":{r1:"NAIF",   r2:"TAHIR",  consultant:"NAWAF"},
+      "25/3":{r1:"ASHJAN", r2:"AHMED",  consultant:"NAWAF"},
+      "26/3":{r1:"OSMAN",  r2:"TAHIR",  consultant:"NAWAF"},
+      "27/3":{r1:"ASMA",   r2:"",       consultant:"NAWAF"},
+      "28/3":{r1:"OSMAN",  r2:"AHMED",  consultant:"SHAMMARI"},
+      "29/3":{r1:"NAIF",   r2:"",       consultant:"SHAMMARI"},
+      "30/3":{r1:"ASHJAN", r2:"AHMED",  consultant:"SHAMMARI"},
+      "31/3":{r1:"OSMAN",  r2:"TAHIR",  consultant:"SHAMMARI"},
     }
   },
   dept_ortho: {
     id:'dept_ortho', nameAr:'العظام والمفاصل', nameEn:'Orthopedic', icon:'🦴',
     consultants:[
-      {id:'c1',name:'Aloteibi',phone:'0505327673'},
-      {id:'c2',name:'Abdelelah',phone:'0533333705'},
-      {id:'c3',name:'Amgad',phone:'0503448999'},
-      {id:'c4',name:'Tegani',phone:'0569696200'},
-      {id:'c5',name:'Altayeb',phone:'0505315174'},
+      {id:'c1',name:'Aloteibi',phone:'0504662265'},
+      {id:'c2',name:'Abdelelah',phone:'0558700202'},
+      {id:'c3',name:'Amgad',phone:'0553214587'},
+      {id:'c4',name:'Tegani',phone:'0509234448'},
+      {id:'c5',name:'Altayeb',phone:'0550153193'},
     ],
     specialists:[
-      {id:'s1',name:'ABDULRAHMAN',phone:'0541609888'},
-      {id:'s2',name:'WALEED',phone:'0555068787'},
-      {id:'s3',name:'SULAIMAN',phone:'0550866500'},
-      {id:'s4',name:'ALAA',phone:'0566563131'},
-      {id:'s5',name:'EMAN',phone:'0507272749'},
-      {id:'s6',name:'HATTAB',phone:'0508111148'},
-      {id:'s7',name:'AMIN',phone:'0543434437'},
+      {id:'s1',name:'ABDULRAHMAN',phone:'0561622294'},
+      {id:'s2',name:'WALEED',phone:'0569046197'},
+      {id:'s3',name:'SULAIMAN',phone:'0505105018'},
+      {id:'s4',name:'ALAA',phone:'0533457448'},
+      {id:'s5',name:'EMAN',phone:'0544010888'},
+      {id:'s6',name:'HATTAB',phone:'0540378163'},
+      {id:'s7',name:'AMIN',phone:'0506094292'},
     ],
     residents:[
-      {id:'r1',name:'Khalid',phone:'0565252635'},
-      {id:'r2',name:'Azzam',phone:'0501155779'},
-      {id:'r3',name:'Eithan',phone:'0556677881'},
-      {id:'r4',name:'Ruwaily',phone:'0556677882'},
-      {id:'r5',name:'Wail',phone:'0556677883'},
-      {id:'r6',name:'Omar',phone:'0556677884'},
-      {id:'r7',name:'Tariq',phone:'0556677885'},
-      {id:'r8',name:'Albaz',phone:'0556677886'},
+      {id:'r1',name:'Khalid',phone:'0554409951'},
+      {id:'r2',name:'Azzam',phone:'0551155653'},
+      {id:'r3',name:'Eithan',phone:'0540636489'},
+      {id:'r4',name:'Ruwaily',phone:'0504955442'},
+      {id:'r5',name:'Wail',phone:'0555066635'},
+      {id:'r6',name:'Omar',phone:'0533944952'},
+      {id:'r7',name:'Tariq',phone:'0507121121'},
+      {id:'r8',name:'Albaz',phone:'0552154845'},
     ],
     schedule: ORTHO_SCHED,
   },
@@ -2276,6 +2746,33 @@ const PRELOADED_DEPTS = {
     ],
     schedule: URO_SCHED,
   },
+  dept_derma: {
+    id:'dept_derma', nameAr:'الجلدية', nameEn:'Dermatology', icon:'🩺',
+    consultants:[
+      {id:'d1', name:'د. عبدالعزيز السحيم',  phone:'0507960291'},
+      {id:'d2', name:'د. خالد العبدالوهاب',   phone:'0505207834'},
+      {id:'d3', name:'د. صالحة حكمي',          phone:'0542057833'},
+      {id:'d4', name:'د. وائل اليحي',           phone:'0561118911'},
+      {id:'d5', name:'د. يزيد الهذال',          phone:'0542400325'},
+      {id:'d6', name:'د. محمد منشي',            phone:'0530012054'},
+      {id:'d7', name:'د. عبدالعزيز الهويش',    phone:'0553229339'},
+      {id:'d8', name:'د. سعود المحرج',          phone:'0550004884'},
+    ],
+    specialists:[
+      {id:'d9',  name:'د. دالل الدوسري', phone:'0545034956'},
+      {id:'d10', name:'د. غادة القرني',  phone:'0507871465'},
+    ],
+    residents:[
+      {id:'d11', name:'د. رئام الخميس',   phone:'0555225608'},
+      {id:'d12', name:'د. العنود احمد',   phone:'0508331847'},
+      {id:'d13', name:'د. رناد الفالح',   phone:'0539222239'},
+      {id:'d14', name:'د. سلطان الشمري', phone:'0504176670'},
+      {id:'d15', name:'د. تاال بيدس',     phone:'0567662973'},
+      {id:'d16', name:'د. نورة البديع',   phone:'0549047745'},
+      {id:'d17', name:'د. رغد الشريف',   phone:'0507518352'},
+    ],
+    schedule: DERMA_SCHED,
+  },
   dept_psy: {
     id:'dept_psy', nameAr:'الطب النفسي', nameEn:'Psychiatry', icon:'🧩',
     consultants:[
@@ -2322,6 +2819,18 @@ const EXTRA_PHONES = {
   "FARES_P":"0562112257","ABAAD":"0559041171","BASMA":"0539340885",
   "SARAH_P":"0566605146","IMAN_P":"0539768452","ABDULELAH_P":"0583581566",
   "AHLAM":"0542872881","NIMRAH":"0532916897","MAHA_P":"0551151616",
+  // Dermatology
+  "د. عبدالعزيز السحيم":"0507960291","ALSAHEEM":"0507960291",
+  "د. وائل اليحي":"0561118911","WAELALYAHYA":"0561118911",
+  "د. يزيد الهذال":"0542400325","YAZEEDALHAZAL":"0542400325",
+  "د. محمد منشي":"0530012054","MUHAMMADMANSHI":"0530012054",
+  "د. عبدالعزيز الهويش":"0553229339","ALHUWAYSH":"0553229339",
+  "د. صالحة حكمي":"0542057833",
+  "د. دالل الدوسري":"0545034956",
+  "د. غادة القرني":"0507871465",
+  // Derma short names
+  "د منشي":"0530012054","د وائل":"0561118911","د يزيد":"0542400325",
+  "د الهويش":"0553229339","د السحيم":"0507960291","د صالحة":"0542057833",
 };
 
 // ===== ENT SCHEDULE (شفت 7:30AM-7:30AM) =====
@@ -2363,10 +2872,45 @@ const GS_PHONES = {
   'MORAYA':'0567399676','ABDULRASHID':'0557675568','SHAMMARY':'0555576794',
   'YAZID':'0505766733','QIRNAS':'0535874788','RAYAN':'0554593576',
 };
+
+// ===== ORTHO DIRECT PHONE LOOKUP =====
+const ORTHO_PHONES = {
+  // Consultants
+  'ALOTEIBI':'0504662265','MOHAMED ALOTAI':'0504662265',
+  'ABDELELAH':'0558700202',
+  'AMGAD':'0553214587','AMGAD MADANI':'0553214587',
+  'TEGANI':'0509234448','ALTIGANI':'0509234448','ALTIGANI ADAM':'0509234448',
+  'ALTAYEB':'0550153193',
+  // Specialists
+  'ABDULRAHMAN':'0561622294',
+  'WALEED':'0569046197',
+  'SULAIMAN':'0505105018',
+  'ALAA':'0533457448',
+  'EMAN':'0544010888',
+  'HATTAB':'0540378163',
+  'AMIN':'0506094292',
+  // Residents
+  'KHALID':'0554409951',
+  'AZZAM':'0551155653',
+  'EITHAN':'0540636489','ALETHAN':'0540636489','AL ETHAN':'0540636489',
+  'RUWAILY':'0504955442','ALRUWAILY':'0504955442',
+  'WAIL':'0555066635','WAEL':'0555066635',
+  'OMAR':'0533944952',
+  'TARIQ':'0507121121','TAREQ':'0507121121',
+  'ALBAZ':'0552154845',
+};
+function getOrthoPhoneDirect(name) {
+  if (!name) return '';
+  const parts = name.split('/');
+  const ph = ORTHO_PHONES[parts[0].trim().toUpperCase()];
+  return ph || '';
+}
+
 function getGSPhone(name) {
   if (!name) return '';
   return GS_PHONES[name.toUpperCase()] || GS_PHONES[name.toUpperCase().replace(/ /g,'')] || '';
 }
+
 
 // Load saved data then merge any new preloaded depts
 load();
@@ -2375,6 +2919,190 @@ mergePreloaded();
 document.getElementById('todayText').textContent = formatArabicDate();
 renderSidebar();
 renderDashboard();
+
+// ===== SUBSTITUTE MODAL FUNCTIONS =====
+function openSubModal(deptId) {
+  saveSubs();
+  const modal = document.getElementById('subModal');
+  modal.style.display = 'flex';
+  const deptSel = document.getElementById('subDeptSel');
+  deptSel.innerHTML = '<option value="">— اختر التخصص —</option>';
+  Object.values(state.departments).forEach(d => {
+    const sel = deptId && d.id === deptId ? 'selected' : '';
+    deptSel.innerHTML += `<option value="${d.id}" ${sel}>${d.icon} ${d.nameAr}</option>`;
+  });
+  document.getElementById('subNameInp').value = '';
+  document.getElementById('subPhoneInp').value = '';
+  subDeptChanged(deptId);
+  modal.onclick = (e) => { if (e.target === modal) closeSubModal(); };
+}
+
+function subDeptChanged(forceDeptId) {
+  const deptId = forceDeptId || document.getElementById('subDeptSel').value;
+  if (forceDeptId) document.getElementById('subDeptSel').value = forceDeptId;
+  const origSel = document.getElementById('subOrigSel');
+  origSel.innerHTML = '<option value="">— اختر الطبيب —</option>';
+  if (!deptId) return;
+  const key = getTodayKey();
+  const dept = state.departments[deptId];
+  if (!dept) return;
+  const entry = (dept.schedule || {})[key];
+  const names = [];
+  if (deptId === 'dept_im') {
+    const imE = IM_SCHED[key];
+    if (imE) {
+      ['erDay','erEvening','erNight'].forEach(sk => (imE[sk]||[]).forEach(n => names.push({role:sk, name:n})));
+      if (imE.mspDay) names.push({role:'mspDay', name:imE.mspDay});
+      if (imE.mspNight) names.push({role:'mspNight', name:imE.mspNight});
+      if (imE.consultant) names.push({role:'consultant', name:imE.consultant});
+    }
+  } else if (deptId === 'dept_gs') {
+    const gsE = GS_MARCH_SCHED[key];
+    if (gsE) ['consultant','sp','sr','jr','plastic'].forEach(r => { if (gsE[r]) names.push({role:r, name:gsE[r]}); });
+  } else if (deptId === 'dept_ortho') {
+    const orE = ORTHO_SCHED[key];
+    if (orE) ['er1','er2','er3','specialist','consultant'].forEach(r => { if (orE[r]) names.push({role:r, name:orE[r]}); });
+  } else if (deptId === 'dept_derma') {
+    const deE = DERMA_SCHED[key];
+    if (deE) ['r1','r2','r3','coord'].forEach(r => { if (deE[r]) names.push({role:r, name:deE[r]}); });
+  } else if (entry) {
+    ['r1','r2','consultant'].forEach(r => { if (entry[r]) names.push({role:r, name:entry[r]}); });
+  }
+  // Deduplicate by name
+  const seen = new Set();
+  names.filter(({name}) => { if (seen.has(name)) return false; seen.add(name); return true; })
+    .forEach(({role, name}) => {
+      const sub = getSub(deptId, role, name);
+      const label = sub ? `${name} ← ${sub.subName} ✓` : name;
+      const val = JSON.stringify({role, name}).replace(/"/g, '&quot;');
+      origSel.innerHTML += `<option value="${val}">${label}</option>`;
+    });
+}
+
+function closeSubModal() {
+  document.getElementById('subModal').style.display = 'none';
+}
+
+function confirmSub() {
+  const deptId = document.getElementById('subDeptSel').value;
+  const origVal = document.getElementById('subOrigSel').value;
+  const subName = document.getElementById('subNameInp').value.trim();
+  const subPhone = document.getElementById('subPhoneInp').value.trim();
+  if (!deptId || !origVal || !subName) { toast('يرجى ملء الحقول المطلوبة', 'error'); return; }
+  const {role, name} = JSON.parse(origVal);
+  setSub(deptId, role, name, subName, subPhone);
+  toast('✅ ' + name + ' → ' + subName, 'success');
+  closeSubModal();
+  renderDashboard();
+  if (state.currentView === 'dept') renderDeptTab(state.currentDeptTab || 'oncall');
+}
+
+function clearSubstitute(deptId, role, originalName, e) {
+  e.stopPropagation();
+  clearSub(deptId, role, originalName);
+  toast('تم إلغاء البديل', 'success');
+  renderDashboard();
+  if (state.currentView === 'dept') renderDeptTab(state.currentDeptTab || 'oncall');
+}
+
+// ===== GOOGLE SHEETS SYNC — أرقام فقط =====
+const SHEETS_API = "https://script.google.com/macros/s/AKfycbzbt8Kk9h5ZToGH6_FxcHWcV2UhkHe6h_PWaqrj_LSptGvxyxLv-1Rn5hyYhAbpqhx6Dg/exec";
+let sheetsSyncInterval = null;
+
+async function fetchFromSheets() {
+  const el = document.getElementById('sheetsStatus');
+  try {
+    const res = await fetch(SHEETS_API + '?t=' + Date.now());
+    if (!res.ok) throw new Error('fetch failed');
+    const data = await res.json();
+    if (!data.ok) throw new Error('api error');
+
+    // 1. تحديث الأرقام
+    if (data.phoneOverrides) {
+      for (const [k, v] of Object.entries(data.phoneOverrides)) {
+        if (!v.phone) continue;
+        const colonIdx = k.indexOf(':');
+        if (colonIdx === -1) continue;
+        const deptId = k.substring(0, colonIdx);
+        const name   = k.substring(colonIdx + 1).toUpperCase().trim();
+        const dept = state.departments[deptId];
+        if (!dept) continue;
+        const all = [...(dept.consultants||[]), ...(dept.specialists||[]), ...(dept.residents||[])];
+        for (const p of all) {
+          const pn = p.name.toUpperCase().replace(/DR\.\s*/g,'').trim();
+          if (pn === name || pn.split(' ')[0] === name || pn.split(' ').pop() === name) {
+            p.phone = v.phone;
+            break;
+          }
+        }
+      }
+    }
+
+    // 2. تحديث المناوبين من الشيت
+    sheetsOnCallOverrides = data.onCallOverrides || {};
+
+    const time = new Date(data.lastUpdated).toLocaleTimeString('ar-SA', {hour:'2-digit', minute:'2-digit'});
+    if (el) el.innerHTML = '✅ ' + time;
+
+    renderDashboard();
+    if (state.currentView === 'dept') renderDeptTab(state.currentDeptTab || 'oncall');
+  } catch(e) {
+    if (el) el.innerHTML = '⚠️';
+  }
+}
+
+function startSheetsSync() {
+  fetchFromSheets();
+  if (sheetsSyncInterval) clearInterval(sheetsSyncInterval);
+  sheetsSyncInterval = setInterval(fetchFromSheets, 5 * 60 * 1000);
+}
+
+startSheetsSync();
 </script>
+
+<!-- ===== SUBSTITUTE MODAL ===== -->
+<div id="subModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:var(--card);border:1px solid var(--border2);border-radius:20px;padding:28px;width:90%;max-width:420px;position:relative;">
+    <div style="font-size:18px;font-weight:800;margin-bottom:4px;text-align:right;">🔄 تعيين بديل طارئ</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:20px;text-align:right;">يُطبّق فقط على اليوم ولا يغيّر الجدول</div>
+    
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;text-align:right;">التخصص</label>
+      <select id="subDeptSel" onchange="subDeptChanged()" style="width:100%;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;text-align:right;">
+        <option value="">— اختر التخصص —</option>
+      </select>
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;text-align:right;">الطبيب الغائب</label>
+      <select id="subOrigSel" style="width:100%;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;text-align:right;">
+        <option value="">— اختر الطبيب —</option>
+      </select>
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;text-align:right;">اسم البديل</label>
+      <input id="subNameInp" type="text" placeholder="اكتب اسم البديل" 
+        style="width:100%;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;text-align:right;box-sizing:border-box;">
+    </div>
+
+    <div style="margin-bottom:22px;">
+      <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;text-align:right;">رقم البديل (اختياري)</label>
+      <input id="subPhoneInp" type="tel" placeholder="05xxxxxxxx" 
+        style="width:100%;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;text-align:right;box-sizing:border-box;">
+    </div>
+
+    <div style="display:flex;gap:10px;">
+      <button onclick="closeSubModal()" 
+        style="flex:1;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text2);font-size:14px;cursor:pointer;">
+        إلغاء
+      </button>
+      <button onclick="confirmSub()" 
+        style="flex:2;padding:12px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">
+        ✅ تأكيد البديل
+      </button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
